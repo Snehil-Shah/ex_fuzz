@@ -1,0 +1,11 @@
+[package]
+name = "engine"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libafl = { version = "0.16.1", default-features = false, features = ["std", "serdeany_autoreg"] }
+libafl_bolts = { version = "0.16.1", default-features = false, features = ["std", "serdeany_autoreg"] }
+rustler = "0.39.0"
