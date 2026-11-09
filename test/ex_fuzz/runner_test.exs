@@ -1,14 +1,9 @@
 defmodule ExFuzz.RunnerTest do
   use ExUnit.Case, async: false
 
-  alias ExFuzz.{Engine, Runner}
+  import ExFuzz.TestHelpers
 
-  defp engine(map_len) do
-    {:ok, engine} =
-      Engine.new(%{map_len: map_len, max_input_len: 64, rng_seed: 1, seeds: ["AAAA"]})
-
-    engine
-  end
+  alias ExFuzz.Runner
 
   defp solutions do
     receive do
@@ -25,7 +20,7 @@ defmodule ExFuzz.RunnerTest do
       _ -> :ok
     end
 
-    stats = Runner.run(engine(1), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
+    stats = Runner.run(engine(), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
 
     assert [%{input: input, outcome: {:crash, :error, %RuntimeError{message: "odd"}, _}}] =
              solutions()
@@ -39,7 +34,7 @@ defmodule ExFuzz.RunnerTest do
     runs = :counters.new(1, [])
     target = fn _ -> :counters.add(runs, 1, 1) end
 
-    stats = Runner.run(engine(1), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
+    stats = Runner.run(engine(), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
 
     assert :counters.get(runs, 1) == 1_000
     assert stats.engine.executions == 1_000
@@ -47,13 +42,13 @@ defmodule ExFuzz.RunnerTest do
 
   test "a timeout also ends the run, as a solution" do
     target = fn _ -> Process.sleep(:infinity) end
-    stats = Runner.run(engine(1), target, report_to: self(), timeout: 10, max_execs: 10)
+    stats = Runner.run(engine(), target, report_to: self(), timeout: 10, max_execs: 10)
     assert_received {:ex_fuzz, :solution, %{outcome: {:timeout, _}}}
     assert stats.engine.executions == 1
   end
 
   test "the engine can be reused for another run" do
-    engine = engine(1)
+    engine = engine()
     first = Runner.run(engine, fn _ -> :ok end, report_to: self(), timeout: 1_000, max_execs: 10)
     second = Runner.run(engine, fn _ -> :ok end, report_to: self(), timeout: 1_000, max_execs: 10)
     assert {first.engine.executions, second.engine.executions} == {10, 20}
@@ -61,14 +56,14 @@ defmodule ExFuzz.RunnerTest do
 
   test "max_time ends the run" do
     stats =
-      Runner.run(engine(1), fn _ -> :ok end, report_to: self(), timeout: 1_000, max_time: 100)
+      Runner.run(engine(), fn _ -> :ok end, report_to: self(), timeout: 1_000, max_time: 100)
 
     assert stats.elapsed_ms >= 100 and stats.elapsed_ms < 1_000
   end
 
   test ":stop ends the run" do
     test = self()
-    engine = engine(1)
+    engine = engine()
 
     runner =
       spawn(fn ->
@@ -85,8 +80,8 @@ defmodule ExFuzz.RunnerTest do
     opts = [report_to: self(), timeout: 1_000, stats_interval: 1]
 
     # Ends on max_execs with both timers pending, then on its deadline.
-    Runner.run(engine(1), target, opts ++ [max_execs: 100, max_time: 50])
-    Runner.run(engine(1), target, opts ++ [max_time: 20])
+    Runner.run(engine(), target, opts ++ [max_execs: 100, max_time: 50])
+    Runner.run(engine(), target, opts ++ [max_time: 20])
 
     # Long enough for any timer the runner left behind to fire.
     Process.sleep(100)
@@ -95,7 +90,7 @@ defmodule ExFuzz.RunnerTest do
   end
 
   test "sends stats periodically" do
-    Runner.run(engine(1), fn _ -> :ok end,
+    Runner.run(engine(), fn _ -> :ok end,
       report_to: self(),
       timeout: 1_000,
       max_time: 200,

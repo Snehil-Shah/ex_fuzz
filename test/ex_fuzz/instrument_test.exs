@@ -1,27 +1,14 @@
 defmodule ExFuzz.InstrumentTest do
   use ExUnit.Case, async: false
 
+  import ExFuzz.TestHelpers
+
   alias ExFuzz.{Engine, Fixtures, Instrument}
-
-  # A fresh coverage map for the `hit`s to write into.
-  defp fresh_map(probes) do
-    {:ok, _engine} = Engine.new(%{map_len: probes, max_input_len: 64, rng_seed: 1, seeds: []})
-  end
-
-  # Put back the original, uninstrumented code when the test ends.
-  defp restore_on_exit(modules) do
-    on_exit(fn ->
-      for module <- modules do
-        :code.purge(module)
-        {:module, ^module} = :code.load_file(module)
-      end
-    end)
-  end
 
   # Instrument and load `modules` over a fresh engine.
   defp instrument!(modules) do
     {:ok, %{binaries: binaries, probes: probes}} = Instrument.instrument(modules)
-    fresh_map(probes)
+    engine(map_len: probes)
     restore_on_exit(modules)
     :ok = Instrument.load(binaries)
     probes
@@ -52,7 +39,7 @@ defmodule ExFuzz.InstrumentTest do
 
     assert Fixtures.Classifier.classify(50) == :big
     big = hits(probes)
-    fresh_map(probes)
+    engine(map_len: probes)
     assert Fixtures.Classifier.classify(1) == :small
     small = hits(probes)
 
@@ -77,7 +64,7 @@ defmodule ExFuzz.InstrumentTest do
 
     hit_sets =
       for path <- paths do
-        fresh_map(probes)
+        engine(map_len: probes)
         path.()
         hits(probes)
       end
@@ -134,7 +121,7 @@ defmodule ExFuzz.InstrumentTest do
     end)
 
     {:ok, %{binaries: binaries, probes: probes}} = Instrument.instrument([module])
-    fresh_map(probes)
+    engine(map_len: probes)
     :ok = Instrument.load(binaries)
 
     assert module.hidden() == :secret

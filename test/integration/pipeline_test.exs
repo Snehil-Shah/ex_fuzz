@@ -3,25 +3,15 @@ defmodule ExFuzz.Integration.PipelineTest do
 
   # Instrumentation, engine, executor and runner together, on real code.
 
-  alias ExFuzz.{Engine, Fixtures, Instrument, Runner}
+  import ExFuzz.TestHelpers
 
-  defp engine(map_len) do
-    {:ok, engine} =
-      Engine.new(%{map_len: map_len, max_input_len: 64, rng_seed: 1, seeds: ["AAAA"]})
-
-    engine
-  end
-
-  defp restore(module) do
-    :code.purge(module)
-    {:module, ^module} = :code.load_file(module)
-  end
+  alias ExFuzz.{Fixtures, Instrument, Runner}
 
   test "coverage finds a planted bug, and the input crashes the original code too" do
     original = Fixtures.Planted.module_info(:md5)
     {:ok, %{binaries: binaries, probes: probes}} = Instrument.instrument([Fixtures.Planted])
-    engine = engine(probes)
-    on_exit(fn -> restore(Fixtures.Planted) end)
+    engine = engine(map_len: probes)
+    restore_on_exit(Fixtures.Planted)
     :ok = Instrument.load(binaries)
 
     stats =
@@ -47,7 +37,7 @@ defmodule ExFuzz.Integration.PipelineTest do
   test "without instrumentation, the same search does not find it" do
     # Same engine settings, no probes: the fuzzer is blind to how close an input gets to "FUZZ".
     stats =
-      Runner.run(engine(1), &Fixtures.Planted.check/1,
+      Runner.run(engine(), &Fixtures.Planted.check/1,
         report_to: self(),
         timeout: 1_000,
         max_execs: 200_000
