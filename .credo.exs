@@ -5,6 +5,7 @@
       name: "default",
       files: %{
         included: ["lib/", "test/"],
+        # Fixtures are test data.
         excluded: [~r"/test/support/fixtures/"]
       },
       strict: true,
