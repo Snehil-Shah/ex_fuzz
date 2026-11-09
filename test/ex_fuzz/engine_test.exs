@@ -104,6 +104,15 @@ defmodule ExFuzz.EngineTest do
     assert %{solutions: 2} = Engine.stats(engine)
   end
 
+  test "report returns the verdict on the pending input and hands out no new one" do
+    {:ok, engine} = Engine.new(opts())
+    Engine.step(engine, :none)
+    assert Engine.report(engine, :crash) == :solution
+    assert_raise ErlangError, ~r/no input is pending/, fn -> Engine.report(engine, :ok) end
+    assert {_, :none} = Engine.step(engine, :none)
+    assert_raise ArgumentError, fn -> Engine.report(engine, :none) end
+  end
+
   test "rejects invalid options with an error tuple" do
     assert {:error, message} = Engine.new(opts(%{map_len: 0}))
     assert message =~ "map_len"

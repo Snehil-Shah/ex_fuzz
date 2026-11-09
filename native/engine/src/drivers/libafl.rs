@@ -25,7 +25,7 @@ use libafl::{
 };
 use libafl_bolts::{ToSlice, current_nanos, rands::StdRand, tuples::tuple_list};
 
-use crate::fuzzer::{Config, Driver, Error, Outcome, Stats, Step, Verdict};
+use crate::fuzzer::{Config, Driver, Error, Outcome, Stats, Verdict};
 
 impl From<Outcome> for ExitKind {
     fn from(outcome: Outcome) -> Self {
@@ -77,41 +77,12 @@ where
     PS: PushStage<EM, BytesInput, OT, S, Z>,
     S: HasCorpus<BytesInput> + HasSolutions<BytesInput> + HasExecutions,
 {
-    fn step(&mut self, previous: Option<Outcome>) -> Result<Step, Error> {
-        let verdict = match (self.pending.take(), previous) {
-            (None, None) => Verdict::None,
-            (Some(input), Some(outcome)) => self.report(input, outcome)?,
-            _ => unreachable!("Engine::step checks the protocol against awaiting_outcome()"),
-        };
-        let input = self.next_input()?;
-        let bytes = input.target_bytes().to_slice().to_vec();
-        self.pending = Some(input);
-        Ok(Step {
-            input: bytes,
-            previous: verdict,
-        })
-    }
-
-    fn stats(&self) -> Stats {
-        Stats {
-            corpus: self.state.corpus().count(),
-            solutions: self.state.solutions().count(),
-            executions: *self.state.executions(),
-        }
-    }
-
-    fn awaiting_outcome(&self) -> bool {
-        self.pending.is_some()
-    }
-}
-
-impl<Z, S, EM, OT, PS> LibAflDriver<Z, S, EM, OT, PS>
-where
-    PS: PushStage<EM, BytesInput, OT, S, Z>,
-    S: HasCorpus<BytesInput> + HasSolutions<BytesInput> + HasExecutions,
-{
-    /// Hand a finished run to LibAFL (`post_exec`) and work out what it did with the input.
-    fn report(&mut self, input: BytesInput, outcome: Outcome) -> Result<Verdict, Error> {
+    /// Hand the finished run to LibAFL (`post_exec`) and work out what it did with the input.
+    fn report(&mut self, outcome: Outcome) -> Result<Verdict, Error> {
+        let input = self
+            .pending
+            .take()
+            .expect("Engine::report checks the protocol against awaiting_outcome()");
         *self.state.executions_mut() += 1;
         let corpus_before = self.state.corpus().count();
         let solutions_before = self.state.solutions().count();
@@ -132,6 +103,33 @@ where
         })
     }
 
+    /// Get the next mutated input from the push stage (`pre_exec`) and keep it pending.
+    fn next(&mut self) -> Result<Vec<u8>, Error> {
+        let input = self.next_input()?;
+        let bytes = input.target_bytes().to_slice().to_vec();
+        self.pending = Some(input);
+        Ok(bytes)
+    }
+
+    /// Read the counts from LibAFL's state.
+    fn stats(&self) -> Stats {
+        Stats {
+            corpus: self.state.corpus().count(),
+            solutions: self.state.solutions().count(),
+            executions: *self.state.executions(),
+        }
+    }
+
+    fn awaiting_outcome(&self) -> bool {
+        self.pending.is_some()
+    }
+}
+
+impl<Z, S, EM, OT, PS> LibAflDriver<Z, S, EM, OT, PS>
+where
+    PS: PushStage<EM, BytesInput, OT, S, Z>,
+    S: HasCorpus<BytesInput> + HasSolutions<BytesInput> + HasExecutions,
+{
     /// Get the next mutated input from the push stage, starting a new round when needed.
     fn next_input(&mut self) -> Result<BytesInput, Error> {
         loop {
@@ -245,19 +243,19 @@ mod tests {
         let _lock = lock_map();
         let mut driver = build(config(), coverage::init(8)).unwrap();
         assert!(!driver.awaiting_outcome(), "nothing handed out yet");
-        driver.step(None).unwrap();
+        driver.next().unwrap();
         assert!(driver.awaiting_outcome(), "an input is out");
-        driver.step(Some(Outcome::Ok)).unwrap();
-        assert!(driver.awaiting_outcome(), "the next input is out");
+        driver.report(Outcome::Ok).unwrap();
+        assert!(!driver.awaiting_outcome(), "the input was reported");
     }
 
     #[test]
-    #[should_panic(expected = "Engine::step checks the protocol")]
+    #[should_panic(expected = "Engine::report checks the protocol")]
     fn out_of_protocol_call_is_unreachable() {
         // `Engine` rejects this call before it reaches the driver.
         let _lock = lock_map();
         let mut driver = build(config(), coverage::init(8)).unwrap();
-        let _ = driver.step(Some(Outcome::Ok));
+        let _ = driver.report(Outcome::Ok);
     }
 
     #[test]
@@ -266,9 +264,9 @@ mod tests {
         // crosses at least 10 round boundaries (`deinit`, then `init` of the next round).
         let _lock = lock_map();
         let mut driver = build(config(), coverage::init(8)).unwrap();
-        driver.step(None).unwrap();
         for _ in 0..10 * DEFAULT_MUTATIONAL_MAX_ITERATIONS {
-            driver.step(Some(Outcome::Ok)).unwrap();
+            driver.next().unwrap();
+            driver.report(Outcome::Ok).unwrap();
         }
     }
 }

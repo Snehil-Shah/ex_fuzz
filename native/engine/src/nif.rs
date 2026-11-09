@@ -1,6 +1,6 @@
 //! The Erlang bindings.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::coverage;
 use crate::fuzzer::{Config, Engine, Outcome, Verdict};
@@ -71,31 +71,29 @@ fn step<'a>(
     previous: Atom,
 ) -> NifResult<(Binary<'a>, Atom)> {
     let previous = decode_outcome(previous)?;
-    let step = engine
-        .0
-        .lock()
-        .map_err(|_| raise("engine mutex poisoned by an earlier panic"))?
+    let step = lock(&engine)?
         .step(previous)
         .map_err(|e| raise(&e.to_string()))?;
 
     let mut binary = NewBinary::new(env, step.input.len());
     binary.as_mut_slice().copy_from_slice(&step.input);
-    let verdict = match step.previous {
-        Verdict::None => atoms::none(),
-        Verdict::Corpus => atoms::corpus(),
-        Verdict::Solution => atoms::solution(),
-    };
-    Ok((binary.into(), verdict))
+    Ok((binary.into(), encode_verdict(step.previous)))
+}
+
+/// Report the pending input's outcome and get the verdict on it.
+#[rustler::nif]
+fn report(engine: ResourceArc<EngineResource>, outcome: Atom) -> NifResult<Atom> {
+    let outcome = decode_outcome(outcome)?.ok_or(rustler::Error::BadArg)?;
+    let verdict = lock(&engine)?
+        .report(outcome)
+        .map_err(|e| raise(&e.to_string()))?;
+    Ok(encode_verdict(verdict))
 }
 
 /// Get the engine's stats.
 #[rustler::nif]
 fn stats(engine: ResourceArc<EngineResource>) -> NifResult<EngineStats> {
-    let stats = engine
-        .0
-        .lock()
-        .map_err(|_| raise("engine mutex poisoned by an earlier panic"))?
-        .stats();
+    let stats = lock(&engine)?.stats();
     Ok(EngineStats {
         corpus: stats.corpus,
         solutions: stats.solutions,
@@ -116,6 +114,23 @@ fn decode_outcome(atom: Atom) -> NifResult<Option<Outcome>> {
     } else {
         Err(rustler::Error::BadArg)
     }
+}
+
+/// `:none | :corpus | :solution`.
+fn encode_verdict(verdict: Verdict) -> Atom {
+    match verdict {
+        Verdict::None => atoms::none(),
+        Verdict::Corpus => atoms::corpus(),
+        Verdict::Solution => atoms::solution(),
+    }
+}
+
+/// Lock the engine for this call.
+fn lock(engine: &EngineResource) -> NifResult<MutexGuard<'_, Engine>> {
+    engine
+        .0
+        .lock()
+        .map_err(|_| raise("engine mutex poisoned by an earlier panic"))
 }
 
 /// Raise `message` as an Erlang exception.

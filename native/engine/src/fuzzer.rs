@@ -68,7 +68,7 @@ pub struct Stats {
 pub enum Error {
     /// The configuration was rejected.
     InvalidConfig(String),
-    /// `step` was called out of protocol (see [`Engine::step`]).
+    /// A call was out of protocol (see [`Engine::step`]).
     Protocol(&'static str),
     /// The driver reported an error.
     Engine(String),
@@ -111,26 +111,38 @@ impl Engine {
 
     /// Report the previous input's outcome and get the next input to run.
     ///
-    /// Protocol: the first call passes `None`, every later call passes the outcome of the
-    /// input returned by the call before it. The coverage map is reset just before this
-    /// returns, so run the input right away.
+    /// Protocol: pass `None` when no input is pending (the first call, or after [`Engine::report`]),
+    /// otherwise the outcome of the pending input. The coverage map is reset before the next input
+    /// is handed out, so run it right away.
     pub fn step(&mut self, previous: Option<Outcome>) -> Result<Step, Error> {
-        match (self.inner.awaiting_outcome(), previous) {
-            (true, None) => {
+        let verdict = match previous {
+            Some(outcome) => self.report(outcome)?,
+            None if self.inner.awaiting_outcome() => {
                 return Err(Error::Protocol(
                     "an outcome is required for the pending input",
                 ));
             }
-            (false, Some(_)) => {
-                return Err(Error::Protocol(
-                    "an outcome was given but no input is pending",
-                ));
+            None => {
+                coverage::reset();
+                Verdict::None
             }
-            _ => {}
+        };
+        Ok(Step {
+            input: self.inner.next()?,
+            previous: verdict,
+        })
+    }
+
+    /// Report the pending input's outcome and get the verdict on it.
+    pub fn report(&mut self, outcome: Outcome) -> Result<Verdict, Error> {
+        if !self.inner.awaiting_outcome() {
+            return Err(Error::Protocol(
+                "an outcome was given but no input is pending",
+            ));
         }
-        let step = self.inner.step(previous)?;
+        let verdict = self.inner.report(outcome)?;
         coverage::reset();
-        Ok(step)
+        Ok(verdict)
     }
 
     /// Progress statistics.
@@ -141,11 +153,13 @@ impl Engine {
 
 /// Driver contract.
 pub(crate) trait Driver: Send {
-    /// See [`Engine::step`].
-    fn step(&mut self, previous: Option<Outcome>) -> Result<Step, Error>;
+    /// Score the pending input's run.
+    fn report(&mut self, outcome: Outcome) -> Result<Verdict, Error>;
+    /// Hand out the next input. It stays pending until reported.
+    fn next(&mut self) -> Result<Vec<u8>, Error>;
     /// See [`Engine::stats`].
     fn stats(&self) -> Stats;
-    /// Whether the last `step` handed out an input whose outcome hasn't been reported yet.
+    /// Whether an input has been handed out and not reported yet.
     fn awaiting_outcome(&self) -> bool;
 }
 
@@ -178,23 +192,33 @@ mod tests {
         ));
     }
 
-    /// The `previous` value of every call a `CallRecordingDriver` receives, shared with the test.
-    type Calls = Arc<Mutex<Vec<Option<Outcome>>>>;
+    /// A driver call, as recorded by `CallRecordingDriver`.
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Report(Outcome),
+        Next,
+    }
 
-    /// Mock driver that records the `previous` value of every call it receives.
+    /// Every call a `CallRecordingDriver` receives, shared with the test.
+    type Calls = Arc<Mutex<Vec<Call>>>;
+
+    /// Mock driver that records every call it receives.
     struct CallRecordingDriver {
         calls: Calls,
         pending: bool,
     }
 
     impl Driver for CallRecordingDriver {
-        fn step(&mut self, previous: Option<Outcome>) -> Result<Step, Error> {
-            self.calls.lock().unwrap().push(previous);
+        fn report(&mut self, outcome: Outcome) -> Result<Verdict, Error> {
+            self.calls.lock().unwrap().push(Call::Report(outcome));
+            self.pending = false;
+            Ok(Verdict::None)
+        }
+
+        fn next(&mut self) -> Result<Vec<u8>, Error> {
+            self.calls.lock().unwrap().push(Call::Next);
             self.pending = true;
-            Ok(Step {
-                input: Vec::new(),
-                previous: Verdict::None,
-            })
+            Ok(Vec::new())
         }
 
         fn stats(&self) -> Stats {
@@ -245,7 +269,7 @@ mod tests {
                 "an outcome is required for the pending input"
             ))
         );
-        assert_eq!(*calls.lock().unwrap(), vec![None]);
+        assert_eq!(*calls.lock().unwrap(), vec![Call::Next]);
     }
 
     #[test]
@@ -254,21 +278,57 @@ mod tests {
         engine.step(None).unwrap();
         assert!(engine.step(None).is_err());
         engine.step(Some(Outcome::Crash)).unwrap();
-        assert_eq!(*calls.lock().unwrap(), vec![None, Some(Outcome::Crash)]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![Call::Next, Call::Report(Outcome::Crash), Call::Next]
+        );
     }
 
-    /// Mock driver that records the value of probe 0 at the moment its `step` runs.
+    #[test]
+    fn report_requires_a_pending_input() {
+        let (_lock, mut engine, calls) = call_recording_engine();
+        assert_eq!(
+            engine.report(Outcome::Ok),
+            Err(Error::Protocol(
+                "an outcome was given but no input is pending"
+            ))
+        );
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "driver must not be called"
+        );
+    }
+
+    #[test]
+    fn report_scores_the_pending_input_without_handing_out_another() {
+        let (_lock, mut engine, calls) = call_recording_engine();
+        engine.step(None).unwrap();
+        engine.report(Outcome::Crash).unwrap();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![Call::Next, Call::Report(Outcome::Crash)]
+        );
+        engine
+            .step(None)
+            .expect("no input is pending, so a new run can start");
+    }
+
+    /// Mock driver that records the value of probe 0 at the moment its `report` runs.
     struct MapReadingDriver {
         seen: Arc<Mutex<Vec<u8>>>,
+        pending: bool,
     }
 
     impl Driver for MapReadingDriver {
-        fn step(&mut self, _previous: Option<Outcome>) -> Result<Step, Error> {
+        fn report(&mut self, _outcome: Outcome) -> Result<Verdict, Error> {
             self.seen.lock().unwrap().push(coverage::get(0));
-            Ok(Step {
-                input: Vec::new(),
-                previous: Verdict::None,
-            })
+            self.pending = false;
+            Ok(Verdict::None)
+        }
+
+        fn next(&mut self) -> Result<Vec<u8>, Error> {
+            self.pending = true;
+            Ok(Vec::new())
         }
 
         fn stats(&self) -> Stats {
@@ -276,24 +336,32 @@ mod tests {
         }
 
         fn awaiting_outcome(&self) -> bool {
-            false
+            self.pending
         }
     }
 
     #[test]
-    fn step_resets_the_map_after_the_driver_has_read_it() {
+    fn reporting_resets_the_map_after_the_driver_has_read_it() {
         let _lock = lock_map();
         coverage::init(8);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut engine = Engine {
-            inner: Box::new(MapReadingDriver { seen: seen.clone() }),
+            inner: Box::new(MapReadingDriver {
+                seen: seen.clone(),
+                pending: false,
+            }),
         };
-        coverage::hit(0);
         engine.step(None).unwrap();
+
+        coverage::hit(0);
+        engine.step(Some(Outcome::Ok)).unwrap();
+        coverage::hit(0);
+        engine.report(Outcome::Ok).unwrap();
+
         assert_eq!(
             *seen.lock().unwrap(),
-            vec![1],
-            "the driver read the map before the reset"
+            vec![1, 1],
+            "step and report: the driver read the map before the reset"
         );
         assert_eq!(
             coverage::get(0),

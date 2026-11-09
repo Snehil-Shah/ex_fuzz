@@ -137,3 +137,15 @@ fn starts_from_an_empty_input_without_seeds() {
     assert_eq!(engine.stats().corpus, 1);
     engine.step(None).unwrap();
 }
+
+#[test]
+fn report_gives_the_verdict_and_lets_a_new_run_start() {
+    let _lock = lock_map();
+    let mut engine = Engine::new(config()).unwrap();
+    engine.step(None).unwrap();
+    assert_eq!(engine.report(Outcome::Crash), Ok(Verdict::Solution));
+    assert_eq!(engine.stats().executions, 1);
+    engine
+        .step(None)
+        .expect("no input is pending, so a new run can start");
+}
