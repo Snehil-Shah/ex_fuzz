@@ -71,6 +71,12 @@ defmodule ExFuzz.ExecutorTest do
     assert_received {:leftover, nil}
   end
 
+  test "sets $callers to the calling process, as Task does" do
+    test = self()
+    run(fn _ -> send(test, {:callers, Process.get(:"$callers")}) end)
+    assert_received {:callers, [^test]}
+  end
+
   test "the input process starts with the configured heap" do
     test = self()
     heap = fn _ -> send(test, Process.info(self(), :min_heap_size)) end

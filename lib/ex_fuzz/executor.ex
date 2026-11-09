@@ -25,11 +25,16 @@ defmodule ExFuzz.Executor do
     timeout = Keyword.fetch!(opts, :timeout)
     min_heap_size = Keyword.get(opts, :min_heap_size, @default_min_heap_size)
 
+    callers = [self() | Process.get(:"$callers", [])]
+
     {pid, ref} =
-      Process.spawn(fn -> exit({:done, call(target, input)}) end, [
-        :monitor,
-        min_heap_size: min_heap_size
-      ])
+      Process.spawn(
+        fn ->
+          Process.put(:"$callers", callers)
+          exit({:done, call(target, input)})
+        end,
+        [:monitor, min_heap_size: min_heap_size]
+      )
 
     receive do
       {:DOWN, ^ref, :process, ^pid, reason} -> outcome(pid, reason)

@@ -8,7 +8,9 @@ defmodule ExFuzz.MixProject do
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      # ExFuzz's macros call ExUnit.
+      dialyzer: [plt_add_apps: [:ex_unit]]
     ]
   end
 
