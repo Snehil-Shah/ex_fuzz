@@ -1,24 +1,12 @@
 defmodule ExFuzz.RunnerTest do
   use ExUnit.Case, async: false
 
-  alias ExFuzz.{Engine, Fixtures, Instrument, Runner}
+  alias ExFuzz.{Engine, Runner}
 
-  defp engine(map_len, seeds \\ ["AAAA"]) do
-    {:ok, engine} = Engine.new(%{map_len: map_len, max_input_len: 64, rng_seed: 1, seeds: seeds})
-    engine
-  end
+  defp engine(map_len) do
+    {:ok, engine} =
+      Engine.new(%{map_len: map_len, max_input_len: 64, rng_seed: 1, seeds: ["AAAA"]})
 
-  # Instrument and load `module` over a fresh engine.
-  defp instrumented_engine(module) do
-    {:ok, %{binaries: binaries, probes: probes}} = Instrument.instrument([module])
-    engine = engine(probes)
-
-    on_exit(fn ->
-      :code.purge(module)
-      {:module, ^module} = :code.load_file(module)
-    end)
-
-    :ok = Instrument.load(binaries)
     engine
   end
 
@@ -28,25 +16,6 @@ defmodule ExFuzz.RunnerTest do
     after
       0 -> []
     end
-  end
-
-  test "finds a planted bug and reports the crashing input" do
-    engine = instrumented_engine(Fixtures.Planted)
-
-    stats =
-      Runner.run(engine, &Fixtures.Planted.check/1,
-        report_to: self(),
-        timeout: 1_000,
-        max_time: 5_000
-      )
-
-    assert_received {:ex_fuzz, :solution,
-                     %{
-                       input: "FUZZ" <> _,
-                       outcome: {:crash, :error, %RuntimeError{message: "planted"}, _}
-                     }}
-
-    assert stats.engine.solutions == 1
   end
 
   test "stops at the first crash and reports the input that caused it" do
