@@ -32,39 +32,38 @@ defmodule ExFuzz.RunnerTest do
 
   test "finds a planted bug and reports the crashing input" do
     engine = instrumented_engine(Fixtures.Planted)
-    test = self()
 
-    {runner, ref} =
-      spawn_monitor(fn ->
-        Runner.run(engine, &Fixtures.Planted.check/1, report_to: test, timeout: 1_000)
-      end)
+    stats =
+      Runner.run(engine, &Fixtures.Planted.check/1,
+        report_to: self(),
+        timeout: 1_000,
+        max_time: 5_000
+      )
 
-    assert_receive {:ex_fuzz, :solution,
-                    %{
-                      input: "FUZZ" <> _,
-                      outcome: {:crash, :error, %RuntimeError{message: "planted"}, _}
-                    }},
-                   5_000
+    assert_received {:ex_fuzz, :solution,
+                     %{
+                       input: "FUZZ" <> _,
+                       outcome: {:crash, :error, %RuntimeError{message: "planted"}, _}
+                     }}
 
-    send(runner, :stop)
-    assert_receive {:DOWN, ^ref, :process, ^runner, :normal}
+    assert stats.engine.solutions == 1
   end
 
-  test "each solution is reported with its own input" do
-    # Crashes on about half the inputs, so pairing a verdict with the wrong input shows.
+  test "stops at the first crash and reports the input that caused it" do
+    # Crashes on about half the inputs, so reporting the wrong input shows.
     target = fn
       <<byte, _::binary>> when rem(byte, 2) == 1 -> raise "odd"
       _ -> :ok
     end
 
-    Runner.run(engine(1), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
+    stats = Runner.run(engine(1), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
 
-    assert [_ | _] = solutions = solutions()
+    assert [%{input: input, outcome: {:crash, :error, %RuntimeError{message: "odd"}, _}}] =
+             solutions()
 
-    for %{input: input, outcome: outcome} <- solutions do
-      assert {:crash, :error, %RuntimeError{message: "odd"}, _} = outcome
-      assert_raise RuntimeError, fn -> target.(input) end
-    end
+    assert_raise RuntimeError, fn -> target.(input) end
+    assert stats.engine.solutions == 1
+    assert stats.engine.executions < 1_000
   end
 
   test "max_execs runs the target exactly that many times" do
@@ -77,20 +76,11 @@ defmodule ExFuzz.RunnerTest do
     assert stats.engine.executions == 1_000
   end
 
-  test "a solution on the last input is still reported" do
-    Runner.run(engine(1), fn _ -> raise "last" end,
-      report_to: self(),
-      timeout: 1_000,
-      max_execs: 1
-    )
-
-    assert_received {:ex_fuzz, :solution, %{outcome: {:crash, :error, %RuntimeError{}, _}}}
-  end
-
-  test "timeouts are solutions" do
+  test "a timeout also ends the run, as a solution" do
     target = fn _ -> Process.sleep(:infinity) end
-    Runner.run(engine(1), target, report_to: self(), timeout: 10, max_execs: 1)
+    stats = Runner.run(engine(1), target, report_to: self(), timeout: 10, max_execs: 10)
     assert_received {:ex_fuzz, :solution, %{outcome: {:timeout, _}}}
+    assert stats.engine.executions == 1
   end
 
   test "the engine can be reused for another run" do
@@ -107,21 +97,18 @@ defmodule ExFuzz.RunnerTest do
     assert stats.elapsed_ms >= 100 and stats.elapsed_ms < 1_000
   end
 
-  test ":stop ends the run, and every solution the engine counted is reported" do
+  test ":stop ends the run" do
     test = self()
     engine = engine(1)
 
     runner =
       spawn(fn ->
-        stats = Runner.run(engine, fn _ -> raise "boom" end, report_to: test, timeout: 1_000)
+        stats = Runner.run(engine, fn _ -> :ok end, report_to: test, timeout: 1_000)
         send(test, {:done, stats})
       end)
 
-    assert_receive {:ex_fuzz, :solution, _}
     send(runner, :stop)
-    assert_receive {:done, stats}
-
-    assert length(solutions()) + 1 == stats.engine.solutions
+    assert_receive {:done, %{engine: %{solutions: 0}}}
   end
 
   test "leaves no timer messages behind for the caller" do

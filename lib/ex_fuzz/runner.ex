@@ -1,7 +1,9 @@
 defmodule ExFuzz.Runner do
   @moduledoc false
 
-  # Drives the fuzz loop for one target until a budget is spent or `:stop` arrives.
+  # Drives the fuzz loop for one target.
+
+  # TODO: Continuous fuzzing mode with crash deduplication.
 
   alias ExFuzz.{Engine, Executor}
 
@@ -17,10 +19,13 @@ defmodule ExFuzz.Runner do
           | {:stats_interval, pos_integer()}
 
   @doc """
-  Fuzzes `target` with `engine` until a budget is spent or this process receives `:stop`.
+  Fuzzes `target` with `engine` until an input crashes or times out,
+  a budget is spent, or this process receives `:stop`.
 
-  Sends `{:ex_fuzz, :solution, solution}` for each solution and `{:ex_fuzz, :stats, stats}` every
-  `:stats_interval` to `:report_to`. Returns the final stats.
+  Sends `{:ex_fuzz, :solution, solution}` for the crashing input and
+  `{:ex_fuzz, :stats, stats}` every `:stats_interval` to `:report_to`.
+
+  Returns the final stats.
 
   Options:
     * `:report_to` (required) - where solutions and stats are sent.
@@ -70,10 +75,14 @@ defmodule ExFuzz.Runner do
   end
 
   defp step(state, previous) do
-    {input, verdict} = Engine.step(state.engine, previous)
-    report_solution(verdict, state)
+    {input, _verdict} = Engine.step(state.engine, previous)
     outcome = Executor.run(state.target, input, state.executor_opts)
-    loop(%{state | execs: state.execs + 1, last: {input, outcome}}, engine_outcome(outcome))
+    state = %{state | execs: state.execs + 1, last: {input, outcome}}
+
+    case outcome do
+      :ok -> loop(state, :ok)
+      _crash_or_timeout -> finish(state, engine_outcome(outcome))
+    end
   end
 
   defp finish(state, :none), do: done(state)
@@ -108,7 +117,6 @@ defmodule ExFuzz.Runner do
   defp stats(state),
     do: %{engine: Engine.stats(state.engine), elapsed_ms: now() - state.started}
 
-  defp engine_outcome(:ok), do: :ok
   defp engine_outcome({:crash, _, _, _}), do: :crash
   defp engine_outcome({:timeout, _}), do: :timeout
 
