@@ -51,21 +51,22 @@ defmodule ExFuzz.InstrumentTest do
   test "every kind of clause fires its own probe" do
     probes = instrument!([Fixtures.Branches])
 
+    # Probing must not change result.
     paths = [
-      fn -> Fixtures.Branches.head(1) end,
-      fn -> Fixtures.Branches.head(2) end,
-      fn -> Fixtures.Branches.anon(1) end,
-      fn -> Fixtures.Branches.anon(2) end,
-      fn -> Fixtures.Branches.recv({:ping, 1}) end,
-      fn -> Fixtures.Branches.recv(:other) end,
-      fn -> Fixtures.Branches.rescued(:fine) end,
-      fn -> Fixtures.Branches.rescued(:boom) end
+      {fn -> Fixtures.Branches.head(1) end, :one},
+      {fn -> Fixtures.Branches.head(2) end, :other},
+      {fn -> Fixtures.Branches.anon(1) end, :one},
+      {fn -> Fixtures.Branches.anon(2) end, :other},
+      {fn -> Fixtures.Branches.recv({:ping, 1}) end, :pong},
+      {fn -> Fixtures.Branches.recv(:other) end, :other},
+      {fn -> Fixtures.Branches.rescued(:fine) end, :fine},
+      {fn -> Fixtures.Branches.rescued(:boom) end, :rescued}
     ]
 
     hit_sets =
-      for path <- paths do
+      for {path, result} <- paths do
         engine(map_len: probes)
-        path.()
+        assert path.() == result
         hits(probes)
       end
 

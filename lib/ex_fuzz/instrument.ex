@@ -67,7 +67,7 @@ defmodule ExFuzz.Instrument do
   end
 
   defp compile(module, forms, options) do
-    case :compile.forms(forms, [:binary, :return_errors, :no_spawn_compiler_process | options]) do
+    case :compile.forms(forms, [:binary, :return_errors | options]) do
       {:ok, ^module, binary} -> {:ok, binary}
       {:error, errors, _warnings} -> {:error, {:compile_failed, module, errors}}
     end
@@ -97,13 +97,22 @@ defmodule ExFuzz.Instrument do
         {form, id}
 
       {:function, anno, name, arity, clauses}, id ->
-        {clauses, next_id} = walk(clauses, id)
+        {clauses, next_id} = Enum.map_reduce(clauses, id, &function_clause/2)
         {{:function, anno, name, arity, clauses}, next_id}
 
       form, id ->
         {form, id}
     end)
   end
+
+  # Compile-time optimization: use a tail call for constant clauses to avoid reserving a stack frame.
+  defp function_clause({:clause, anno, patterns, guards, [value]} = clause, id) do
+    if constant?(value),
+      do: {{:clause, anno, patterns, guards, [probe(anno, id, [value])]}, id + 1},
+      else: walk(clause, id)
+  end
+
+  defp function_clause(clause, id), do: walk(clause, id)
 
   defp walk({:clause, anno, patterns, guards, body}, id) do
     {body, next_id} = walk(body, id + 1)
@@ -118,8 +127,25 @@ defmodule ExFuzz.Instrument do
   defp walk(list, id) when is_list(list), do: Enum.map_reduce(list, id, &walk/2)
   defp walk(other, id), do: {other, id}
 
-  defp probe(anno, id) do
+  # Literals, and tuples, lists and binaries of literals.
+  defp constant?({kind, _anno, _value}) when kind in [:atom, :integer, :float, :char, :string],
+    do: true
+
+  defp constant?({nil, _anno}), do: true
+  defp constant?({:tuple, _anno, elements}), do: Enum.all?(elements, &constant?/1)
+  defp constant?({:cons, _anno, head, tail}), do: constant?(head) and constant?(tail)
+
+  # A segment's size can be an expression too: `<<1::size(n)>>` isn't constant.
+  defp constant?({:bin, _anno, elements}) do
+    Enum.all?(elements, fn {:bin_element, _anno, value, size, _type} ->
+      constant?(value) and (size == :default or constant?(size))
+    end)
+  end
+
+  defp constant?(_expression), do: false
+
+  defp probe(anno, id, args \\ []) do
     {:call, anno, {:remote, anno, {:atom, anno, @probe_module}, {:atom, anno, @probe_function}},
-     [{:integer, anno, id}]}
+     [{:integer, anno, id} | args]}
   end
 end

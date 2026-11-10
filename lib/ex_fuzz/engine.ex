@@ -28,6 +28,17 @@ defmodule ExFuzz.Engine do
   def hit(_id), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Coverage probe: records that probe `id` was reached and returns `value` as a tail call.
+
+  Use this for clauses with constant bodies to avoid reserving a stack frame.
+  """
+  @spec hit(non_neg_integer(), value) :: value when value: term()
+  def hit(id, value) do
+    hit(id)
+    value
+  end
+
+  @doc """
   Current value of probe `id`'s counter.
   """
   @spec coverage_get(non_neg_integer()) :: 0..255
