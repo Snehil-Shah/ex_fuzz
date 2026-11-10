@@ -14,18 +14,16 @@ defmodule ExFuzz.Integration.PipelineTest do
     restore_on_exit(Fixtures.Planted)
     :ok = Instrument.load(binaries)
 
-    stats =
-      Runner.run(engine, &Fixtures.Planted.check/1,
-        report_to: self(),
-        timeout: 1_000,
-        max_time: 5_000
-      )
-
-    assert_received {:ex_fuzz, :solution,
-                     %{
-                       input: "FUZZ" <> _ = input,
-                       outcome: {:crash, :error, %RuntimeError{message: "planted"}, _}
-                     }}
+    assert {:solution,
+            %{
+              input: "FUZZ" <> _ = input,
+              outcome: {:crash, :error, %RuntimeError{message: "planted"}, _}
+            }, stats} =
+             Runner.run(engine, &Fixtures.Planted.check/1,
+               report_to: self(),
+               timeout: 1_000,
+               max_time: 5_000
+             )
 
     assert stats.engine.solutions == 1
 
@@ -36,14 +34,13 @@ defmodule ExFuzz.Integration.PipelineTest do
 
   test "without instrumentation, the same search does not find it" do
     # Same engine settings, no probes: the fuzzer is blind to how close an input gets to "FUZZ".
-    stats =
-      Runner.run(engine(), &Fixtures.Planted.check/1,
-        report_to: self(),
-        timeout: 1_000,
-        max_execs: 200_000
-      )
+    assert {:done, stats} =
+             Runner.run(engine(), &Fixtures.Planted.check/1,
+               report_to: self(),
+               timeout: 1_000,
+               max_execs: 200_000
+             )
 
-    refute_received {:ex_fuzz, :solution, _}
     assert stats.engine.executions == 200_000
   end
 end

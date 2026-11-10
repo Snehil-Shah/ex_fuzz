@@ -2,22 +2,35 @@ defmodule ExFuzz do
   @moduledoc """
   Coverage-guided fuzz testing for Elixir.
 
-      defmodule MyParserTest do
+      defmodule JSONTest do
         use ExUnit.Case
         use ExFuzz
 
-        fuzz "parse never crashes", data <- binary(), seeds: ["{}", "[1]"] do
-          MyParser.parse(data)
+        @tag timeout: 100
+        fuzz "JSON never crashes", data <- binary(), seeds: ["{}", "[1]"] do
+          with {:ok, term} <- JSON.decode(data) do
+            assert JSON.decode!(JSON.encode!(term)) == term
+          end
         end
       end
 
-  Fuzz tests run alongside your regular ExUnit tests, using the seed corpus as the regression suite.
+  Fuzz tests run alongside your regular ExUnit tests,
+  using the seed corpus as an ever-growing regression suite.
+  Run only them with `mix test --only fuzz`.
+
+  To start fuzzing a target, point `mix fuzz` at the test by line or name:
+
+      $ mix fuzz test/json_test.exs:6
+      $ mix fuzz test/json_test.exs:"fuzz JSON never crashes"
   """
 
-  alias ExFuzz.Executor
+  alias ExFuzz.{Executor, Worker}
+
+  # Worker environment settings. Defined by `ExFuzz.Coordinator` when dispatching fuzz workers.
+  @worker_env "EX_FUZZ_WORKER"
 
   defmodule Error do
-    @moduledoc "Raised when an input fails a fuzz test with anything but a failed assertion."
+    @moduledoc "Raised when an input crashes or times out in a fuzz test."
     defexception [:message]
   end
 
@@ -29,7 +42,7 @@ defmodule ExFuzz do
   end
 
   @doc """
-  Defines a fuzz test with `message`, running its body once per input.
+  Defines a fuzz test with `message`, running its body as the target, once per input.
 
   The test may also define a pattern, which will be matched against the test context.
 
@@ -39,9 +52,15 @@ defmodule ExFuzz do
 
   ## Examples
 
-      fuzz "parse never crashes", data <- binary(), seeds: ["{}", "[1]"] do
-        MyParser.parse(data)
+      fuzz "JSON never crashes", data <- binary(), seeds: ["{}", "[1]"] do
+        with {:ok, term} <- JSON.decode(data) do
+          assert JSON.decode!(JSON.encode!(term)) == term
+        end
       end
+
+  You can start fuzzing the target using `mix fuzz`:
+
+      $ mix fuzz test/json_test.exs:"fuzz JSON never crashes"
   """
   defmacro fuzz(message, input, context \\ quote(do: _), opts \\ [], contents) do
     {context, opts} =
@@ -60,7 +79,7 @@ defmodule ExFuzz do
     body =
       quote do
         # Not a tail call, so the test's own line stays in stack traces.
-        ExFuzz.__replay__(unquote(opts[:seeds]), unquote(full_context), fn unquote(var) ->
+        ExFuzz.__run__(unquote(opts[:seeds]), unquote(full_context), fn unquote(var) ->
           _ = unquote(block)
           :ok
         end)
@@ -99,23 +118,38 @@ defmodule ExFuzz do
   end
 
   @doc false
-  def __replay__(seeds, context, fun) do
+  def __run__(seeds, context, fun) do
     timeout = input_timeout(context[:input_timeout])
 
+    # If worker environment is defined, start the worker loop.
+    case System.get_env(@worker_env) do
+      nil -> replay(seeds, timeout, fun)
+      settings -> run_fuzzer(settings, context, seeds, timeout, fun)
+    end
+  end
+
+  defp replay(seeds, timeout, fun) do
     for seed <- seeds do
       case Executor.run(fun, seed, timeout: timeout) do
-        :ok ->
-          :ok
-
-        {:crash, kind, reason, stacktrace} ->
-          fail(kind, reason, stacktrace, seed)
-
-        {:timeout, stacktrace} ->
-          fail("timed out after #{timeout} ms", stacktrace, seed)
+        :ok -> :ok
+        failure -> fail(failure, timeout, "seed:  " <> inspect(seed))
       end
     end
 
     :ok
+  end
+
+  defp run_fuzzer(settings, context, seeds, timeout, fun) do
+    case Worker.run(settings, context, seeds, timeout, fun) do
+      :ok ->
+        :ok
+
+      {:solution, %{input: input, outcome: failure}} ->
+        fail(failure, timeout, "input: " <> inspect(input))
+
+      {:error, reason} ->
+        raise Error, "could not start fuzzing: #{inspect(reason)}"
+    end
   end
 
   # ExUnit timeout precedence: --trace disables it, then the tag, then the config.
@@ -129,18 +163,22 @@ defmodule ExFuzz do
     end
   end
 
-  @spec fail(term(), term(), Exception.stacktrace(), binary()) :: no_return()
-  defp fail(:error, %ExUnit.AssertionError{} = error, stacktrace, seed) do
-    reraise %{error | message: error.message <> "\nseed:  " <> inspect(seed)}, stacktrace
+  @spec fail(Executor.outcome(), timeout(), String.t()) :: no_return()
+  defp fail({:crash, :error, %ExUnit.AssertionError{} = error, stacktrace}, _timeout, input) do
+    reraise %{error | message: error.message <> "\n" <> input}, stacktrace
   end
 
-  defp fail(kind, reason, stacktrace, seed) do
+  defp fail({:crash, kind, reason, stacktrace}, _timeout, input) do
     {reason, stacktrace} = Exception.blame(kind, reason, stacktrace)
-    fail(got(kind, reason), stacktrace, seed)
+    raise_error(got(kind, reason), stacktrace, input)
   end
 
-  defp fail(message, stacktrace, seed) do
-    reraise Error, [message: message <> "\nseed:  " <> inspect(seed)], stacktrace
+  defp fail({:timeout, stacktrace}, timeout, input) do
+    raise_error("timed out after #{timeout} ms", stacktrace, input)
+  end
+
+  defp raise_error(message, stacktrace, input) do
+    reraise Error, [message: message <> "\n" <> input], stacktrace
   end
 
   defp got(:error, exception),

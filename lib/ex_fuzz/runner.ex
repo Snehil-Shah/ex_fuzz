@@ -11,29 +11,29 @@ defmodule ExFuzz.Runner do
 
   @type solution :: %{input: binary(), outcome: Executor.outcome()}
   @type stats :: %{engine: Engine.stats(), elapsed_ms: non_neg_integer()}
+  @type result :: {:done, stats()} | {:solution, solution(), stats()}
+  @type budget :: {:max_execs, non_neg_integer()} | {:max_time, non_neg_integer()}
   @type option ::
           Executor.option()
           | {:report_to, Process.dest()}
-          | {:max_execs, non_neg_integer()}
-          | {:max_time, non_neg_integer()}
+          | budget()
           | {:stats_interval, pos_integer()}
 
   @doc """
   Fuzzes `target` with `engine` until an input crashes or times out,
   a budget is spent, or this process receives `:stop`.
 
-  Sends `{:ex_fuzz, :solution, solution}` for the crashing input and
-  `{:ex_fuzz, :stats, stats}` every `:stats_interval` to `:report_to`.
+  Sends `{:ex_fuzz, :stats, stats}` to `:report_to` every `:stats_interval`.
 
-  Returns the final stats.
+  Returns the final stats, with the crashing input if there was one.
 
   Options:
-    * `:report_to` (required) - where solutions and stats are sent.
+    * `:report_to` (required) - where stats are sent.
     * `:timeout` (required), `:min_heap_size` - passed to `ExFuzz.Executor.run/3`.
-    * `:max_execs`, `:max_time` (milliseconds) - budgets. Without either, runs until `:stop`.
+    * `t:budget/0` - `:max_execs`, or `:max_time` in milliseconds. Without either, runs until `:stop`.
     * `:stats_interval` - milliseconds between stats messages. Defaults to #{@default_stats_interval}.
   """
-  @spec run(Engine.engine(), (binary() -> term()), [option()]) :: stats()
+  @spec run(Engine.engine(), Executor.target(), [option()]) :: result()
   def run(engine, target, opts) do
     max_time = Keyword.get(opts, :max_time)
     stats_interval = Keyword.get(opts, :stats_interval, @default_stats_interval)
@@ -48,8 +48,7 @@ defmodule ExFuzz.Runner do
       deadline_timer: max_time && :erlang.start_timer(max_time, self(), :deadline),
       stats_timer: :erlang.start_timer(stats_interval, self(), :stats),
       started: now(),
-      execs: 0,
-      last: nil
+      execs: 0
     }
 
     loop(state, :none)
@@ -77,22 +76,31 @@ defmodule ExFuzz.Runner do
   defp step(state, previous) do
     {input, _verdict} = Engine.step(state.engine, previous)
     outcome = Executor.run(state.target, input, state.executor_opts)
-    state = %{state | execs: state.execs + 1, last: {input, outcome}}
+    state = %{state | execs: state.execs + 1}
 
     case outcome do
       :ok -> loop(state, :ok)
-      _crash_or_timeout -> finish(state, engine_outcome(outcome))
+      _crash_or_timeout -> crash(state, input, outcome)
     end
   end
 
-  defp finish(state, :none), do: done(state)
-
-  defp finish(state, previous) do
-    state.engine |> Engine.report(previous) |> report_solution(state)
-    done(state)
+  defp crash(state, input, outcome) do
+    case Engine.report(state.engine, engine_outcome(outcome)) do
+      :solution -> {:solution, %{input: input, outcome: outcome}, close(state)}
+      _verdict -> {:done, close(state)}
+    end
   end
 
-  defp done(state) do
+  defp finish(state, :none), do: {:done, close(state)}
+
+  defp finish(state, :ok) do
+    # The last input can still add to the corpus.
+    _verdict = Engine.report(state.engine, :ok)
+    {:done, close(state)}
+  end
+
+  # Cancels the timers and returns the final stats.
+  defp close(state) do
     cancel(state.stats_timer)
     cancel(state.deadline_timer)
     stats(state)
@@ -108,11 +116,6 @@ defmodule ExFuzz.Runner do
       end
     end
   end
-
-  defp report_solution(:solution, %{last: {input, outcome}, report_to: pid}),
-    do: send(pid, {:ex_fuzz, :solution, %{input: input, outcome: outcome}})
-
-  defp report_solution(_verdict, _state), do: :ok
 
   defp stats(state),
     do: %{engine: Engine.stats(state.engine), elapsed_ms: now() - state.started}

@@ -23,4 +23,33 @@ defmodule ExFuzz.TestHelpers do
 
   @doc "Restores `modules` when the test ends."
   def restore_on_exit(modules), do: on_exit(fn -> restore(modules) end)
+
+  @doc """
+  Like `ExUnit.CaptureIO.with_io/1`, for worker nodes started inside `fun`.
+  """
+  def with_node_io(fun) do
+    {:ok, string_io} = StringIO.open("")
+    group_leader = spawn_link(fn -> accept_setopts(string_io) end)
+    original = Process.group_leader()
+    Process.group_leader(self(), group_leader)
+
+    result =
+      try do
+        fun.()
+      after
+        Process.group_leader(self(), original)
+      end
+
+    {:ok, {_input, output}} = StringIO.close(string_io)
+    {result, output}
+  end
+
+  defp accept_setopts(string_io) do
+    receive do
+      {:io_request, from, ref, {:setopts, _opts}} -> send(from, {:io_reply, ref, :ok})
+      {:io_request, _from, _ref, _request} = request -> send(string_io, request)
+    end
+
+    accept_setopts(string_io)
+  end
 end

@@ -12,10 +12,10 @@ defmodule ExFuzz.Engine do
   @type outcome :: :ok | :crash | :timeout
   @type verdict :: :none | :corpus | :solution
   @type engine_opts :: %{
-          required(:map_len) => pos_integer(),
-          required(:max_input_len) => pos_integer(),
-          required(:rng_seed) => non_neg_integer() | nil,
-          required(:seeds) => [binary()]
+          map_len: pos_integer(),
+          max_input_len: pos_integer(),
+          rng_seed: non_neg_integer() | nil,
+          seeds: [binary()]
         }
   @type stats :: %{
           corpus: non_neg_integer(),

@@ -12,6 +12,7 @@ defmodule ExFuzz.Executor do
           | {:crash, kind :: term(), reason :: term(), Exception.stacktrace()}
           | {:timeout, Exception.stacktrace()}
   @type option :: {:timeout, timeout()} | {:min_heap_size, pos_integer()}
+  @type target :: (binary() -> term())
 
   @doc """
   Runs `target.(input)` in a fresh process.
@@ -20,7 +21,7 @@ defmodule ExFuzz.Executor do
     * `:timeout` (required) - milliseconds before the input is killed.
     * `:min_heap_size` - starting heap of the input process, in words. Defaults to #{@default_min_heap_size}.
   """
-  @spec run((binary() -> term()), binary(), [option()]) :: outcome()
+  @spec run(target(), binary(), [option()]) :: outcome()
   def run(target, input, opts) do
     timeout = Keyword.fetch!(opts, :timeout)
     min_heap_size = Keyword.get(opts, :min_heap_size, @default_min_heap_size)

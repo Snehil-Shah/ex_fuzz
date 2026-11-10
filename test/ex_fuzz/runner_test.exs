@@ -5,14 +5,6 @@ defmodule ExFuzz.RunnerTest do
 
   alias ExFuzz.Runner
 
-  defp solutions do
-    receive do
-      {:ex_fuzz, :solution, solution} -> [solution | solutions()]
-    after
-      0 -> []
-    end
-  end
-
   test "stops at the first crash and reports the input that caused it" do
     # Crashes on about half the inputs, so reporting the wrong input shows.
     target = fn
@@ -20,12 +12,10 @@ defmodule ExFuzz.RunnerTest do
       _ -> :ok
     end
 
-    stats = Runner.run(engine(), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
+    assert {:solution, %{input: input, outcome: {:crash, :error, %RuntimeError{}, _}}, stats} =
+             Runner.run(engine(), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
 
-    assert [%{input: input, outcome: {:crash, :error, %RuntimeError{message: "odd"}, _}}] =
-             solutions()
-
-    assert_raise RuntimeError, fn -> target.(input) end
+    assert_raise RuntimeError, "odd", fn -> target.(input) end
     assert stats.engine.solutions == 1
     assert stats.engine.executions < 1_000
   end
@@ -34,7 +24,8 @@ defmodule ExFuzz.RunnerTest do
     runs = :counters.new(1, [])
     target = fn _ -> :counters.add(runs, 1, 1) end
 
-    stats = Runner.run(engine(), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
+    assert {:done, stats} =
+             Runner.run(engine(), target, report_to: self(), timeout: 1_000, max_execs: 1_000)
 
     assert :counters.get(runs, 1) == 1_000
     assert stats.engine.executions == 1_000
@@ -42,20 +33,23 @@ defmodule ExFuzz.RunnerTest do
 
   test "a timeout also ends the run, as a solution" do
     target = fn _ -> Process.sleep(:infinity) end
-    stats = Runner.run(engine(), target, report_to: self(), timeout: 10, max_execs: 10)
-    assert_received {:ex_fuzz, :solution, %{outcome: {:timeout, _}}}
+
+    assert {:solution, %{outcome: {:timeout, _}}, stats} =
+             Runner.run(engine(), target, report_to: self(), timeout: 10, max_execs: 10)
+
     assert stats.engine.executions == 1
   end
 
   test "the engine can be reused for another run" do
     engine = engine()
-    first = Runner.run(engine, fn _ -> :ok end, report_to: self(), timeout: 1_000, max_execs: 10)
-    second = Runner.run(engine, fn _ -> :ok end, report_to: self(), timeout: 1_000, max_execs: 10)
+    opts = [report_to: self(), timeout: 1_000, max_execs: 10]
+    {:done, first} = Runner.run(engine, fn _ -> :ok end, opts)
+    {:done, second} = Runner.run(engine, fn _ -> :ok end, opts)
     assert {first.engine.executions, second.engine.executions} == {10, 20}
   end
 
   test "max_time ends the run" do
-    stats =
+    {:done, stats} =
       Runner.run(engine(), fn _ -> :ok end, report_to: self(), timeout: 1_000, max_time: 100)
 
     assert stats.elapsed_ms >= 100 and stats.elapsed_ms < 1_000
@@ -67,8 +61,7 @@ defmodule ExFuzz.RunnerTest do
 
     runner =
       spawn(fn ->
-        stats = Runner.run(engine, fn _ -> :ok end, report_to: test, timeout: 1_000)
-        send(test, {:done, stats})
+        send(test, Runner.run(engine, fn _ -> :ok end, report_to: test, timeout: 1_000))
       end)
 
     send(runner, :stop)
