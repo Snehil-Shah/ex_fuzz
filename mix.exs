@@ -7,10 +7,12 @@ defmodule ExFuzz.MixProject do
       version: "0.1.0",
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
+      # Fixture projects.
+      test_ignore_filters: [~r"^test/fixtures/"],
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      # ExFuzz's macros call ExUnit.
-      dialyzer: [plt_add_apps: [:ex_unit]]
+      # ExFuzz's macros call ExUnit, and `mix fuzz` and the worker call Mix.
+      dialyzer: [plt_add_apps: [:ex_unit, :mix]]
     ]
   end
 
@@ -29,7 +31,9 @@ defmodule ExFuzz.MixProject do
     [
       {:rustler, "~> 0.38.0", runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      # Fixture projects.
+      {:mock_dep, path: "test/fixtures/mock_dep", only: :test}
     ]
   end
 end
