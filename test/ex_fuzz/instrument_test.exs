@@ -148,8 +148,8 @@ defmodule ExFuzz.InstrumentTest do
 
   # The VM also logs the refusal.
   @tag :capture_log
-  test "load reports a module the VM refuses to replace" do
-    {:ok, %{binaries: binaries}} = Instrument.instrument([:lists])
-    assert Instrument.load(binaries) == {:error, {:lists, :sticky_directory}}
+  test "load reports a module the VM refuses to load" do
+    compiled = [{Fixtures.Classifier, ~c"classifier.beam", "not a BEAM file"}]
+    assert Instrument.load(compiled) == {:error, {Fixtures.Classifier, :badfile}}
   end
 end

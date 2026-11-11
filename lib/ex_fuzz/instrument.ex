@@ -13,17 +13,9 @@ defmodule ExFuzz.Instrument do
   @spec instrument([module()]) ::
           {:ok, %{binaries: [compiled()], probes: non_neg_integer()}} | {:error, term()}
   def instrument(modules) do
-    result =
-      Enum.reduce_while(modules, {:ok, [], 0}, fn module, {:ok, compiled, id} ->
-        case instrument_module(module, id) do
-          {:ok, binary, next_id} -> {:cont, {:ok, [binary | compiled], next_id}}
-          {:error, _} = error -> {:halt, error}
-        end
-      end)
-
-    case result do
-      {:ok, compiled, probes} -> {:ok, %{binaries: Enum.reverse(compiled), probes: probes}}
-      {:error, _} = error -> error
+    with {:ok, probed, probes} <- instrument_modules(modules),
+         {:ok, binaries} <- all_ok(parallel(probed, &compile/1)) do
+      {:ok, %{binaries: binaries, probes: probes}}
     end
   end
 
@@ -40,12 +32,38 @@ defmodule ExFuzz.Instrument do
     end)
   end
 
-  defp instrument_module(module, first_id) do
-    with {:ok, beam, filename} <- object_code(module),
-         {:ok, forms} <- abstract_code(module, beam),
-         {forms, next_id} = instrument_forms(forms, first_id),
-         {:ok, binary} <- compile(module, forms, preserved_options(beam)) do
-      {:ok, {module, filename, binary}, next_id}
+  defp parallel(items, fun) do
+    items
+    |> Task.async_stream(fun, timeout: :infinity, ordered: true)
+    |> Enum.map(fn {:ok, result} -> result end)
+  end
+
+  defp all_ok(results) do
+    case Enum.find(results, &match?({:error, _}, &1)) do
+      nil -> {:ok, Enum.map(results, fn {:ok, value} -> value end)}
+      error -> error
+    end
+  end
+
+  defp instrument_modules(modules) do
+    result =
+      Enum.reduce_while(modules, {:ok, [], 0}, fn module, {:ok, probed, id} ->
+        with {:ok, beam, filename} <- object_code(module),
+             {:ok, forms} <- abstract_code(module, beam) do
+          {forms, next_id} = instrument_forms(forms, id)
+          {:cont, {:ok, [{module, filename, beam, forms} | probed], next_id}}
+        else
+          error -> {:halt, error}
+        end
+      end)
+
+    with {:ok, probed, probes} <- result, do: {:ok, Enum.reverse(probed), probes}
+  end
+
+  defp compile({module, filename, beam, forms}) do
+    case :compile.forms(forms, [:binary, :return_errors | preserved_options(beam)]) do
+      {:ok, ^module, binary} -> {:ok, {module, filename, binary}}
+      {:error, errors, _warnings} -> {:error, {:compile_failed, module, errors}}
     end
   end
 
@@ -63,13 +81,6 @@ defmodule ExFuzz.Instrument do
       {:ok, forms}
     else
       _ -> {:error, {:no_debug_info, module}}
-    end
-  end
-
-  defp compile(module, forms, options) do
-    case :compile.forms(forms, [:binary, :return_errors | options]) do
-      {:ok, ^module, binary} -> {:ok, binary}
-      {:error, errors, _warnings} -> {:error, {:compile_failed, module, errors}}
     end
   end
 
