@@ -60,7 +60,7 @@ struct LibAflDriver<Z, S, EM, OT, PS> {
     /// The mutational push stage that produces inputs.
     /// Maps to [`StdMutationalPushStage`].
     stage: PS,
-    /// Input handed out by the last `step`, awaiting its outcome.
+    /// Input handed out by the last `next`, awaiting its outcome.
     pending: Option<BytesInput>,
     /// Whether the push stage is mid-round (between `init` and `deinit`).
     in_round: bool,

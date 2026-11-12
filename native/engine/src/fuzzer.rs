@@ -2,7 +2,7 @@
 //!
 //! [`Driver`] is the engine's contract. Implementations live in [`crate::drivers`].
 //!
-//! SAFETY: The coverage map is process-wide, so only one engine should be stepping at a time per OS process.
+//! SAFETY: The coverage map is process-wide, so only one engine should be running at a time per OS process.
 
 use std::fmt;
 
@@ -32,24 +32,15 @@ pub enum Outcome {
     Timeout,
 }
 
-/// What the engine did with the previous input once its outcome was reported.
+/// What the engine did with an input once its outcome was reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// No previous input or it was not interesting.
+    /// It was not interesting.
     None,
     /// It reached new coverage and was added to the corpus.
     Corpus,
     /// It triggered the objective (a crash or timeout) and was added to the solutions.
     Solution,
-}
-
-/// Result of one [`Engine::step`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Step {
-    /// The next input to run.
-    pub input: Vec<u8>,
-    /// Verdict on the previous input.
-    pub previous: Verdict,
 }
 
 /// The engine's progress so far.
@@ -68,7 +59,7 @@ pub struct Stats {
 pub enum Error {
     /// The configuration was rejected.
     InvalidConfig(String),
-    /// A call was out of protocol (see [`Engine::step`]).
+    /// A call was out of protocol (see [`Engine`]).
     Protocol(&'static str),
     /// The driver reported an error.
     Engine(String),
@@ -87,6 +78,16 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// A fuzzing engine.
+///
+/// # Protocol
+///
+/// The caller runs each input between two calls, in this order:
+///
+/// 1. [`Engine::next`] hands out an input, which is then pending.
+/// 2. The caller runs it.
+/// 3. [`Engine::report`] scores the pending input's outcome.
+///
+/// A call out of this order returns [`Error::Protocol`].
 pub struct Engine {
     inner: Box<dyn Driver>,
 }
@@ -109,28 +110,15 @@ impl Engine {
         })
     }
 
-    /// Report the previous input's outcome and get the next input to run.
+    /// Hand out the next input to run. It stays pending until [`Engine::report`].
     ///
-    /// Protocol: pass `None` when no input is pending (the first call, or after [`Engine::report`]),
-    /// otherwise the outcome of the pending input. The coverage map is reset before the next input
-    /// is handed out, so run it right away.
-    pub fn step(&mut self, previous: Option<Outcome>) -> Result<Step, Error> {
-        let verdict = match previous {
-            Some(outcome) => self.report(outcome)?,
-            None if self.inner.awaiting_outcome() => {
-                return Err(Error::Protocol(
-                    "an outcome is required for the pending input",
-                ));
-            }
-            None => {
-                coverage::reset();
-                Verdict::None
-            }
-        };
-        Ok(Step {
-            input: self.inner.next()?,
-            previous: verdict,
-        })
+    /// The coverage map is reset just before, so run the input right away.
+    pub fn next(&mut self) -> Result<Vec<u8>, Error> {
+        if self.inner.awaiting_outcome() {
+            return Err(Error::Protocol("the pending input must be reported first"));
+        }
+        coverage::reset();
+        self.inner.next()
     }
 
     /// Report the pending input's outcome and get the verdict on it.
@@ -140,9 +128,7 @@ impl Engine {
                 "an outcome was given but no input is pending",
             ));
         }
-        let verdict = self.inner.report(outcome)?;
-        coverage::reset();
-        Ok(verdict)
+        self.inner.report(outcome)
     }
 
     /// Progress statistics.
@@ -245,46 +231,6 @@ mod tests {
     }
 
     #[test]
-    fn first_step_must_not_report_an_outcome() {
-        let (_lock, mut engine, calls) = call_recording_engine();
-        assert_eq!(
-            engine.step(Some(Outcome::Ok)),
-            Err(Error::Protocol(
-                "an outcome was given but no input is pending"
-            ))
-        );
-        assert!(
-            calls.lock().unwrap().is_empty(),
-            "driver must not be called"
-        );
-    }
-
-    #[test]
-    fn later_steps_must_report_an_outcome() {
-        let (_lock, mut engine, calls) = call_recording_engine();
-        engine.step(None).unwrap();
-        assert_eq!(
-            engine.step(None),
-            Err(Error::Protocol(
-                "an outcome is required for the pending input"
-            ))
-        );
-        assert_eq!(*calls.lock().unwrap(), vec![Call::Next]);
-    }
-
-    #[test]
-    fn protocol_errors_leave_the_pending_input_reportable() {
-        let (_lock, mut engine, calls) = call_recording_engine();
-        engine.step(None).unwrap();
-        assert!(engine.step(None).is_err());
-        engine.step(Some(Outcome::Crash)).unwrap();
-        assert_eq!(
-            *calls.lock().unwrap(),
-            vec![Call::Next, Call::Report(Outcome::Crash), Call::Next]
-        );
-    }
-
-    #[test]
     fn report_requires_a_pending_input() {
         let (_lock, mut engine, calls) = call_recording_engine();
         assert_eq!(
@@ -300,17 +246,27 @@ mod tests {
     }
 
     #[test]
-    fn report_scores_the_pending_input_without_handing_out_another() {
+    fn next_requires_the_pending_input_to_be_reported() {
         let (_lock, mut engine, calls) = call_recording_engine();
-        engine.step(None).unwrap();
+        engine.next().unwrap();
+        assert_eq!(
+            engine.next(),
+            Err(Error::Protocol("the pending input must be reported first"))
+        );
+        assert_eq!(*calls.lock().unwrap(), vec![Call::Next]);
+    }
+
+    #[test]
+    fn protocol_errors_leave_the_pending_input_reportable() {
+        let (_lock, mut engine, calls) = call_recording_engine();
+        engine.next().unwrap();
+        assert!(engine.next().is_err());
         engine.report(Outcome::Crash).unwrap();
+        engine.next().unwrap();
         assert_eq!(
             *calls.lock().unwrap(),
-            vec![Call::Next, Call::Report(Outcome::Crash)]
+            vec![Call::Next, Call::Report(Outcome::Crash), Call::Next]
         );
-        engine
-            .step(None)
-            .expect("no input is pending, so a new run can start");
     }
 
     /// Mock driver that records the value of probe 0 at the moment its `report` runs.
@@ -341,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn reporting_resets_the_map_after_the_driver_has_read_it() {
+    fn next_resets_the_map_and_report_reads_it_untouched() {
         let _lock = lock_map();
         coverage::init(8);
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -351,22 +307,17 @@ mod tests {
                 pending: false,
             }),
         };
-        engine.step(None).unwrap();
 
         coverage::hit(0);
-        engine.step(Some(Outcome::Ok)).unwrap();
+        engine.next().unwrap();
+        assert_eq!(coverage::get(0), 0, "next reset the map");
+
         coverage::hit(0);
         engine.report(Outcome::Ok).unwrap();
-
         assert_eq!(
             *seen.lock().unwrap(),
-            vec![1, 1],
-            "step and report: the driver read the map before the reset"
-        );
-        assert_eq!(
-            coverage::get(0),
-            0,
-            "the engine reset the map after the driver returned"
+            vec![1],
+            "the driver read the run's hits"
         );
     }
 

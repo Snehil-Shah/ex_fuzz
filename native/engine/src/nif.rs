@@ -33,20 +33,20 @@ struct EngineStats {
     executions: u64,
 }
 
-/// Coverage probe. Instrumented code calls this at the start of every clause body.
+/// [`coverage::hit`], returning `:ok`. Instrumented code calls this at the start of every clause body.
 #[rustler::nif]
 fn hit(id: usize) -> Atom {
     coverage::hit(id);
     atoms::ok()
 }
 
-/// Get a probe's current hit count.
+/// [`coverage::get`], as an integer.
 #[rustler::nif]
 fn coverage_get(id: usize) -> u8 {
     coverage::get(id)
 }
 
-/// Returns `{:ok, engine}` or `{:error, message}`.
+/// [`Engine::new`]: `{:ok, engine}` or `{:error, message}`.
 #[rustler::nif]
 fn new(opts: EngineOpts) -> Result<ResourceArc<EngineResource>, String> {
     let config = Config {
@@ -63,34 +63,27 @@ fn new(opts: EngineOpts) -> Result<ResourceArc<EngineResource>, String> {
     Ok(ResourceArc::new(EngineResource(Mutex::new(engine))))
 }
 
-/// Report the previous outcome and get `{next_input, verdict_on_previous}`.
+/// [`Engine::next`], returning the input as a binary.
 #[rustler::nif]
-fn step<'a>(
-    env: Env<'a>,
-    engine: ResourceArc<EngineResource>,
-    previous: Atom,
-) -> NifResult<(Binary<'a>, Atom)> {
-    let previous = decode_outcome(previous)?;
-    let step = lock(&engine)?
-        .step(previous)
-        .map_err(|e| raise(&e.to_string()))?;
+fn next<'a>(env: Env<'a>, engine: ResourceArc<EngineResource>) -> NifResult<Binary<'a>> {
+    let input = lock(&engine)?.next().map_err(|e| raise(&e.to_string()))?;
 
-    let mut binary = NewBinary::new(env, step.input.len());
-    binary.as_mut_slice().copy_from_slice(&step.input);
-    Ok((binary.into(), encode_verdict(step.previous)))
+    let mut binary = NewBinary::new(env, input.len());
+    binary.as_mut_slice().copy_from_slice(&input);
+    Ok(binary.into())
 }
 
-/// Report the pending input's outcome and get the verdict on it.
+/// [`Engine::report`], returning the verdict as an atom.
 #[rustler::nif]
 fn report(engine: ResourceArc<EngineResource>, outcome: Atom) -> NifResult<Atom> {
-    let outcome = decode_outcome(outcome)?.ok_or(rustler::Error::BadArg)?;
+    let outcome = decode_outcome(outcome)?;
     let verdict = lock(&engine)?
         .report(outcome)
         .map_err(|e| raise(&e.to_string()))?;
     Ok(encode_verdict(verdict))
 }
 
-/// Get the engine's stats.
+/// [`Engine::stats`], as an Elixir map.
 #[rustler::nif]
 fn stats(engine: ResourceArc<EngineResource>) -> NifResult<EngineStats> {
     let stats = lock(&engine)?.stats();
@@ -101,16 +94,14 @@ fn stats(engine: ResourceArc<EngineResource>) -> NifResult<EngineStats> {
     })
 }
 
-/// `:none` for the first step, otherwise `:ok | :crash | :timeout`.
-fn decode_outcome(atom: Atom) -> NifResult<Option<Outcome>> {
-    if atom == atoms::none() {
-        Ok(None)
-    } else if atom == atoms::ok() {
-        Ok(Some(Outcome::Ok))
+/// `:ok | :crash | :timeout`.
+fn decode_outcome(atom: Atom) -> NifResult<Outcome> {
+    if atom == atoms::ok() {
+        Ok(Outcome::Ok)
     } else if atom == atoms::crash() {
-        Ok(Some(Outcome::Crash))
+        Ok(Outcome::Crash)
     } else if atom == atoms::timeout() {
-        Ok(Some(Outcome::Timeout))
+        Ok(Outcome::Timeout)
     } else {
         Err(rustler::Error::BadArg)
     }

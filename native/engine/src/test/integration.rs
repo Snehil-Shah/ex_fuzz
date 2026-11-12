@@ -24,12 +24,9 @@ fn planted_bug(input: &[u8], probes: bool) -> Outcome {
 /// Run the caller-owned loop until the objective fires or `budget` executions pass.
 /// Returns the input that triggered the objective.
 fn fuzz(engine: &mut Engine, budget: u64, target: impl Fn(&[u8]) -> Outcome) -> Option<Vec<u8>> {
-    let mut step = engine.step(None).unwrap();
     for _ in 0..budget {
-        let outcome = target(&step.input);
-        let input = std::mem::take(&mut step.input);
-        step = engine.step(Some(outcome)).unwrap();
-        if step.previous == Verdict::Solution {
+        let input = engine.next().unwrap();
+        if engine.report(target(&input)).unwrap() == Verdict::Solution {
             return Some(input);
         }
     }
@@ -72,16 +69,15 @@ fn new_coverage_is_reported_as_corpus_verdict() {
     let _lock = lock_map();
     let mut engine = Engine::new(config()).unwrap();
     let corpus_before = engine.stats().corpus;
-    engine.step(None).unwrap();
+    engine.next().unwrap();
     // First execution touches probe 0 for the first time: new coverage.
     coverage::hit(0);
-    let step = engine.step(Some(Outcome::Ok)).unwrap();
-    assert_eq!(step.previous, Verdict::Corpus);
+    assert_eq!(engine.report(Outcome::Ok), Ok(Verdict::Corpus));
     assert_eq!(engine.stats().corpus, corpus_before + 1);
     // Same coverage again: not interesting.
+    engine.next().unwrap();
     coverage::hit(0);
-    let step = engine.step(Some(Outcome::Ok)).unwrap();
-    assert_eq!(step.previous, Verdict::None);
+    assert_eq!(engine.report(Outcome::Ok), Ok(Verdict::None));
     assert_eq!(engine.stats().executions, 2);
 }
 
@@ -89,20 +85,27 @@ fn new_coverage_is_reported_as_corpus_verdict() {
 fn crashes_and_timeouts_are_reported_as_solution_verdicts() {
     let _lock = lock_map();
     let mut engine = Engine::new(config()).unwrap();
-    engine.step(None).unwrap();
-    let step = engine.step(Some(Outcome::Crash)).unwrap();
-    assert_eq!(step.previous, Verdict::Solution, "a crash is a solution");
-    let step = engine.step(Some(Outcome::Timeout)).unwrap();
-    assert_eq!(step.previous, Verdict::Solution, "a timeout is a solution");
+    engine.next().unwrap();
+    assert_eq!(
+        engine.report(Outcome::Crash),
+        Ok(Verdict::Solution),
+        "a crash is a solution"
+    );
+    engine.next().unwrap();
+    assert_eq!(
+        engine.report(Outcome::Timeout),
+        Ok(Verdict::Solution),
+        "a timeout is a solution"
+    );
     assert_eq!(engine.stats().solutions, 2);
 }
 
 #[test]
-fn step_resets_the_coverage_map() {
+fn next_resets_the_coverage_map() {
     let _lock = lock_map();
     let mut engine = Engine::new(config()).unwrap();
     coverage::hit(3);
-    engine.step(None).unwrap();
+    engine.next().unwrap();
     assert_eq!(coverage::get(3), 0);
 }
 
@@ -114,15 +117,11 @@ fn generated_inputs_respect_max_input_len() {
         ..config()
     })
     .unwrap();
-    let mut step = engine.step(None).unwrap();
     for i in 0..20_000 {
-        assert!(
-            step.input.len() <= 16,
-            "input of {} bytes",
-            step.input.len()
-        );
+        let input = engine.next().unwrap();
+        assert!(input.len() <= 16, "input of {} bytes", input.len());
         coverage::hit(i % 8);
-        step = engine.step(Some(Outcome::Ok)).unwrap();
+        engine.report(Outcome::Ok).unwrap();
     }
 }
 
@@ -135,17 +134,17 @@ fn starts_from_an_empty_input_without_seeds() {
     })
     .unwrap();
     assert_eq!(engine.stats().corpus, 1);
-    engine.step(None).unwrap();
+    engine.next().unwrap();
 }
 
 #[test]
-fn report_gives_the_verdict_and_lets_a_new_run_start() {
+fn report_counts_the_execution_and_lets_the_next_input_out() {
     let _lock = lock_map();
     let mut engine = Engine::new(config()).unwrap();
-    engine.step(None).unwrap();
+    engine.next().unwrap();
     assert_eq!(engine.report(Outcome::Crash), Ok(Verdict::Solution));
     assert_eq!(engine.stats().executions, 1);
     engine
-        .step(None)
-        .expect("no input is pending, so a new run can start");
+        .next()
+        .expect("the input was reported, so the next one can go out");
 }

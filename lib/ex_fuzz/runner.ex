@@ -51,52 +51,39 @@ defmodule ExFuzz.Runner do
       execs: 0
     }
 
-    loop(state, :none)
+    loop(state)
   end
 
-  defp loop(%{execs: execs, max_execs: execs} = state, previous), do: finish(state, previous)
+  defp loop(%{execs: execs, max_execs: execs} = state), do: {:done, close(state)}
 
-  defp loop(%{deadline_timer: deadline, stats_timer: stats} = state, previous) do
+  defp loop(%{deadline_timer: deadline, stats_timer: stats} = state) do
     receive do
       :stop ->
-        finish(state, previous)
+        {:done, close(state)}
 
       {:timeout, ^deadline, :deadline} ->
-        finish(%{state | deadline_timer: nil}, previous)
+        {:done, close(%{state | deadline_timer: nil})}
 
       {:timeout, ^stats, :stats} ->
         send(state.report_to, {:ex_fuzz, :stats, stats(state)})
         timer = :erlang.start_timer(state.stats_interval, self(), :stats)
-        step(%{state | stats_timer: timer}, previous)
+        run_input(%{state | stats_timer: timer})
     after
-      0 -> step(state, previous)
+      0 -> run_input(state)
     end
   end
 
-  defp step(state, previous) do
-    {input, _verdict} = Engine.step(state.engine, previous)
+  defp run_input(state) do
+    input = Engine.next(state.engine)
     outcome = Executor.run(state.target, input, state.executor_opts)
     state = %{state | execs: state.execs + 1}
 
-    case outcome do
-      :ok -> loop(state, :ok)
-      _crash_or_timeout -> crash(state, input, outcome)
+    # The first failure ends the run.
+    case {outcome, Engine.report(state.engine, engine_outcome(outcome))} do
+      {:ok, _verdict} -> loop(state)
+      {_failure, :solution} -> {:solution, %{input: input, outcome: outcome}, close(state)}
+      {_failure, _verdict} -> {:done, close(state)}
     end
-  end
-
-  defp crash(state, input, outcome) do
-    case Engine.report(state.engine, engine_outcome(outcome)) do
-      :solution -> {:solution, %{input: input, outcome: outcome}, close(state)}
-      _verdict -> {:done, close(state)}
-    end
-  end
-
-  defp finish(state, :none), do: {:done, close(state)}
-
-  defp finish(state, :ok) do
-    # The last input can still add to the corpus.
-    _verdict = Engine.report(state.engine, :ok)
-    {:done, close(state)}
   end
 
   # Cancels the timers and returns the final stats.
@@ -120,6 +107,7 @@ defmodule ExFuzz.Runner do
   defp stats(state),
     do: %{engine: Engine.stats(state.engine), elapsed_ms: now() - state.started}
 
+  defp engine_outcome(:ok), do: :ok
   defp engine_outcome({:crash, _, _, _}), do: :crash
   defp engine_outcome({:timeout, _}), do: :timeout
 

@@ -6,6 +6,14 @@ defmodule ExFuzz.Engine do
   # WARNING: There can be only one engine per VM at a time as the coverage map is shared per OS process.
   # New engine replaces the older one. That means only one target can be fuzzed at a time per VM.
 
+  # Protocol: the caller runs each input between two calls, in this order:
+  #
+  #   1. `next/1` hands out an input, which is then pending.
+  #   2. The caller runs it.
+  #   3. `report/2` scores the pending input's outcome.
+  #
+  # A call out of this order raises.
+
   use Rustler, otp_app: :ex_fuzz, crate: "engine"
 
   @type engine :: reference()
@@ -66,21 +74,14 @@ defmodule ExFuzz.Engine do
   def new(_opts), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  Reports the previous input's outcome and returns the next input to run.
-
-  Pass `:none` when no input is pending (the first call, or after `report/2`),
-  otherwise the outcome of the returned input.
+  Hands out the next input to run. It stays pending until `report/2`.
 
   The coverage map is reset just before this returns, so run the input right away.
   """
-  @spec step(engine(), outcome() | :none) :: {binary(), verdict()}
-  def step(_engine, _previous), do: :erlang.nif_error(:nif_not_loaded)
+  @spec next(engine()) :: binary()
+  def next(_engine), do: :erlang.nif_error(:nif_not_loaded)
 
-  @doc """
-  Reports the pending input's outcome and returns the verdict on it.
-
-  The next `step/2` then starts with `:none`.
-  """
+  @doc "Reports the pending input's outcome and returns the verdict on it."
   @spec report(engine(), outcome()) :: verdict()
   def report(_engine, _outcome), do: :erlang.nif_error(:nif_not_loaded)
 
