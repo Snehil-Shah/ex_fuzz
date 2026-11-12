@@ -3,7 +3,7 @@ defmodule ExFuzz.InstrumentTest do
 
   import ExFuzz.TestHelpers
 
-  alias ExFuzz.{Engine, Fixtures, Instrument}
+  alias ExFuzz.{Engine, Instrument}
 
   # Instrument and load `modules` over a fresh engine.
   defp instrument!(modules) do
@@ -17,30 +17,30 @@ defmodule ExFuzz.InstrumentTest do
   # Ids of the probes that fired.
   defp hits(probes), do: for(id <- 0..(probes - 1), Engine.coverage_get(id) > 0, do: id)
 
-  # Line where `Fixtures.Crasher.crash/0` raised, from its stack trace.
+  # Line where `SampleDep.Crasher.crash/0` raised, from its stack trace.
   defp crash_line do
-    Fixtures.Crasher.crash()
+    SampleDep.Crasher.crash()
   rescue
     _ ->
-      [{Fixtures.Crasher, :crash, 0, location} | _] = __STACKTRACE__
+      [{SampleDep.Crasher, :crash, 0, location} | _] = __STACKTRACE__
       location[:line]
   end
 
   test "compiles modules into loadable binaries and counts their probes" do
-    assert {:ok, %{binaries: [{Fixtures.Classifier, file, binary}], probes: 3}} =
-             Instrument.instrument([Fixtures.Classifier])
+    assert {:ok, %{binaries: [{SampleDep.Classifier, file, binary}], probes: 3}} =
+             Instrument.instrument([SampleDep.Classifier])
 
     assert is_binary(binary)
-    assert List.to_string(file) =~ "Elixir.ExFuzz.Fixtures.Classifier.beam"
+    assert List.to_string(file) =~ "Elixir.SampleDep.Classifier.beam"
   end
 
   test "loaded modules behave as before, and each branch fires its own probe" do
-    probes = instrument!([Fixtures.Classifier])
+    probes = instrument!([SampleDep.Classifier])
 
-    assert Fixtures.Classifier.classify(50) == :big
+    assert SampleDep.Classifier.classify(50) == :big
     big = hits(probes)
     engine(map_len: probes)
-    assert Fixtures.Classifier.classify(1) == :small
+    assert SampleDep.Classifier.classify(1) == :small
     small = hits(probes)
 
     assert [entry, big_branch] = big
@@ -49,18 +49,18 @@ defmodule ExFuzz.InstrumentTest do
   end
 
   test "every kind of clause fires its own probe" do
-    probes = instrument!([Fixtures.Branches])
+    probes = instrument!([SampleDep.Branches])
 
     # Probing must not change result.
     paths = [
-      {fn -> Fixtures.Branches.head(1) end, :one},
-      {fn -> Fixtures.Branches.head(2) end, :other},
-      {fn -> Fixtures.Branches.anon(1) end, :one},
-      {fn -> Fixtures.Branches.anon(2) end, :other},
-      {fn -> Fixtures.Branches.recv({:ping, 1}) end, :pong},
-      {fn -> Fixtures.Branches.recv(:other) end, :other},
-      {fn -> Fixtures.Branches.rescued(:fine) end, :fine},
-      {fn -> Fixtures.Branches.rescued(:boom) end, :rescued}
+      {fn -> SampleDep.Branches.head(1) end, :one},
+      {fn -> SampleDep.Branches.head(2) end, :other},
+      {fn -> SampleDep.Branches.anon(1) end, :one},
+      {fn -> SampleDep.Branches.anon(2) end, :other},
+      {fn -> SampleDep.Branches.recv({:ping, 1}) end, :pong},
+      {fn -> SampleDep.Branches.recv(:other) end, :other},
+      {fn -> SampleDep.Branches.rescued(:fine) end, :fine},
+      {fn -> SampleDep.Branches.rescued(:boom) end, :rescued}
     ]
 
     hit_sets =
@@ -74,32 +74,32 @@ defmodule ExFuzz.InstrumentTest do
   end
 
   test "numbers probes across modules without overlap" do
-    {:ok, %{probes: classifier}} = Instrument.instrument([Fixtures.Classifier])
-    {:ok, %{probes: shadow}} = Instrument.instrument([Fixtures.Shadow])
-    total = instrument!([Fixtures.Classifier, Fixtures.Shadow])
+    {:ok, %{probes: classifier}} = Instrument.instrument([SampleDep.Classifier])
+    {:ok, %{probes: shadow}} = Instrument.instrument([SampleDep.Shadow])
+    total = instrument!([SampleDep.Classifier, SampleDep.Shadow])
 
     assert total == classifier + shadow
 
-    Fixtures.Shadow.call(:anything)
+    SampleDep.Shadow.call(:anything)
     assert hits(total) != []
     assert Enum.all?(hits(total), &(&1 >= classifier)), "Shadow's probes come after Classifier's"
   end
 
   test "stack traces still point at the original source lines" do
     original = crash_line()
-    instrument!([Fixtures.Crasher])
+    instrument!([SampleDep.Crasher])
     assert crash_line() == original
   end
 
   test "leaves __info__/1 unprobed" do
-    probes = instrument!([Fixtures.Classifier])
-    Fixtures.Classifier.__info__(:functions)
+    probes = instrument!([SampleDep.Classifier])
+    SampleDep.Classifier.__info__(:functions)
     assert hits(probes) == []
   end
 
   test "a module shadowing an auto-imported BIF still calls its own function" do
-    instrument!([Fixtures.Shadow])
-    assert Fixtures.Shadow.call(:anything) == :mine
+    instrument!([SampleDep.Shadow])
+    assert SampleDep.Shadow.call(:anything) == :mine
   end
 
   @tag :tmp_dir
@@ -149,7 +149,7 @@ defmodule ExFuzz.InstrumentTest do
   # The VM also logs the refusal.
   @tag :capture_log
   test "load reports a module the VM refuses to load" do
-    compiled = [{Fixtures.Classifier, ~c"classifier.beam", "not a BEAM file"}]
-    assert Instrument.load(compiled) == {:error, {Fixtures.Classifier, :badfile}}
+    compiled = [{SampleDep.Classifier, ~c"classifier.beam", "not a BEAM file"}]
+    assert Instrument.load(compiled) == {:error, {SampleDep.Classifier, :badfile}}
   end
 end

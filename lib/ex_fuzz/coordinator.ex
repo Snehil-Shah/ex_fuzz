@@ -7,7 +7,14 @@ defmodule ExFuzz.Coordinator do
 
   @crash_dump "_build/ex_fuzz/erl_crash.dump"
 
-  @type option :: {:report_to, Process.dest()} | Worker.option()
+  @typedoc "A fuzz test, by the line it is on or by its name."
+  @type test :: {Path.t(), pos_integer() | String.t()}
+
+  @type option ::
+          {:report_to, Process.dest()}
+          | {:test, test()}
+          | {:mix_args, [String.t()]}
+          | Worker.option()
   @type result ::
           {:done, Runner.stats()}
           | {:error, :stopped | term()}
@@ -21,12 +28,15 @@ defmodule ExFuzz.Coordinator do
 
   Options:
     * `:report_to` (required) - where events are relayed.
-    * `t:ExFuzz.Worker.option/0` - see `ExFuzz.Worker.encode/1`.
+    * `:test` (required) - the fuzz test to run, as `mix test` selects it.
+    * `:mix_args` - more arguments for the worker node's `mix test`, e.g. `["--timeout", "500"]`.
+    * `t:ExFuzz.Worker.option/0` - the fuzzing options.
   """
   @spec run([option()]) :: result()
   def run(opts) do
     {report_to, opts} = Keyword.pop!(opts, :report_to)
-    test = Keyword.fetch!(opts, :test)
+    {mix_args, opts} = Keyword.pop(opts, :mix_args, [])
+    {test, opts} = Keyword.pop!(opts, :test)
     settings = [origin: self()] ++ opts
     File.mkdir_p!(Path.dirname(@crash_dump))
 
@@ -37,28 +47,30 @@ defmodule ExFuzz.Coordinator do
         exec: {elixir_bin(~c"elixir"), []},
         env: [
           {~c"MIX_ENV", ~c"test"},
-          {~c"EX_FUZZ_WORKER", to_charlist(Worker.encode(settings))},
+          {~c"EX_FUZZ_WORKER", to_charlist(Worker.encode_settings(settings))},
           {~c"ERL_CRASH_DUMP", to_charlist(Path.expand(@crash_dump))}
         ],
-        post_process_args: &mix_test(&1, test)
+        post_process_args: &mix_test(&1, select(test) ++ mix_args)
       })
 
     ref = Process.monitor(peer)
+    :ok = :logger.add_primary_filter(__MODULE__, {&__MODULE__.drop_peer_exit/2, peer})
 
     try do
       await(peer, ref, report_to, false)
     after
       Process.demonitor(ref, [:flush])
       stop(peer)
+      :logger.remove_primary_filter(__MODULE__)
     end
   end
 
   defp elixir_bin(name), do: :filename.join([:code.lib_dir(:elixir), ~c"../../bin", name])
 
   # Hands peer's own `erl` flags to `elixir --erl`, then runs `mix test` as the program.
-  defp mix_test(erl_args, test) do
+  defp mix_test(erl_args, test_args) do
     erl_args = Enum.join(erl_args, " ")
-    args = ["--erl", erl_args, elixir_bin(~c"mix"), "test" | select(test)]
+    args = ["--erl", erl_args, elixir_bin(~c"mix"), "test" | test_args]
     Enum.map(args, &to_charlist/1)
   end
 
@@ -99,6 +111,15 @@ defmodule ExFuzz.Coordinator do
       :stop -> result
     end
   end
+
+  # `:peer` logs its control process stopping with the node's exit status, even 0.
+  # The status is part of our result, so that log is only noise.
+  @doc false
+  def drop_peer_exit(%{meta: %{pid: peer}, msg: {:report, %{label: label}}}, peer)
+      when label in [{:gen_server, :terminate}, {:proc_lib, :crash}],
+      do: :stop
+
+  def drop_peer_exit(_event, _peer), do: :ignore
 
   defp stop(peer) do
     :peer.stop(peer)

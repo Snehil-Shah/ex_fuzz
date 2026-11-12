@@ -5,62 +5,76 @@ defmodule ExFuzz.Worker do
   # The coordinator starts that node as `mix test` for one fuzz test.
   # Events are pushed to the coordinator in the origin VM.
 
-  alias ExFuzz.{Engine, Executor, Instrument, Runner}
+  alias ExFuzz.{Engine, Executor, Instrument, Runner, Scope}
 
+  # libFuzzer's default.
+  # TODO: Configurable
+  @default_max_input_len 4_096
+
+  @typedoc """
+  A fuzzing option, passed on by the coordinator.
+
+    * `:max_input_len` - in bytes. Defaults to #{@default_max_input_len}.
+    * `:rng_seed` - see `t:ExFuzz.Engine.opts/0`.
+    * `t:ExFuzz.Runner.budget/0`, `:min_heap_size`, `:stats_interval` - see `ExFuzz.Runner.run/3`.
+  """
   @type option ::
-          {:test, test()}
-          | {:modules, [module()]}
-          | {:max_input_len, pos_integer()}
+          {:max_input_len, pos_integer()}
           | {:rng_seed, non_neg_integer()}
           | {:min_heap_size, pos_integer()}
           | Runner.budget()
           | {:stats_interval, pos_integer()}
 
-  @typedoc "Encoded by the coordinator into the worker node's environment."
-  @type setting :: option() | {:origin, pid()} | {:io, Process.dest()}
+  @typedoc """
+  Encoded by the coordinator into the worker node's environment.
 
-  @typedoc "A fuzz test, by the line it is on or by its name."
-  @type test :: {Path.t(), pos_integer() | String.t()}
+    * `t:option/0` - the fuzzing options.
+    * `:origin` (required) - the coordinator, in the origin VM: who receives the events.
+    * `:io` - the local process that relays events to `:origin`. Defaults to `:user`, the worker node's I/O server.
+  """
+  @type setting :: option() | {:origin, pid()} | {:io, Process.dest()}
 
   @typedoc "The running fuzz test's ExUnit context."
   @type context :: %{
           required(:module) => module(),
           required(:test) => atom(),
-          required(:describe_line) => pos_integer() | nil,
           optional(atom()) => term()
         }
 
   @type result :: :ok | {:solution, Runner.solution()} | {:error, term()}
 
-  @doc """
-  Encodes `settings` for the environment variable, as `run/5` takes them.
+  @doc "Encodes settings for the environment variable."
+  @spec encode_settings([setting()]) :: String.t()
+  def encode_settings(settings), do: settings |> :erlang.term_to_binary() |> Base.encode64()
 
-  Settings:
-    * `:origin`, `:test`, `:modules`, `:max_input_len` (required).
-    * `:rng_seed` - see `t:ExFuzz.Engine.engine_opts/0`.
-    * `t:ExFuzz.Runner.budget/0`, `:min_heap_size`, `:stats_interval` - see `ExFuzz.Runner.run/3`.
-    * `:io` - where events are pushed. Defaults to `:user`, the worker node's I/O server.
-  """
-  @spec encode([setting()]) :: String.t()
-  def encode(settings), do: settings |> :erlang.term_to_binary() |> Base.encode64()
+  @doc "Decodes settings from `encode_settings/1`."
+  @spec decode_settings(String.t()) :: [setting()]
+  def decode_settings(encoded), do: encoded |> Base.decode64!() |> :erlang.binary_to_term([:safe])
 
   @doc """
-  Fuzzes `target`, starting from `seeds`, until it crashes, a budget is spent, or it receives `:stop`.
+  The end-to-end fuzzing session.
 
-  `encoded` comes from `encode/1`. `context` is the running ExUnit context.
+  Arguments:
+    * `encoded` - the settings, from `encode_settings/1`.
+    * `context` - the running ExUnit context.
+    * `seeds` - the inputs fuzzing starts from.
+    * `additional_modules` - instrumented along with the project's, see `ExFuzz.Scope.modules/1`.
+    * `timeout` - milliseconds before an input is killed.
+    * `target` - fuzzed until it crashes, a budget is spent, or the worker receives `:stop`.
 
   Pushes `{:ex_fuzz, :started, %{module: module, test: name}}`, the runner's stats, then the
   solution if there is one, then `{:ex_fuzz, :done, stats}`, or `{:ex_fuzz, :error, reason}`
   if fuzzing couldn't start.
   """
-  @spec run(String.t(), context(), [binary()], timeout(), Executor.target()) :: result()
-  def run(encoded, context, seeds, timeout, target) do
-    settings = encoded |> Base.decode64!() |> :erlang.binary_to_term([:safe])
+  @spec run(String.t(), context(), [binary()], [module()], timeout(), Executor.target()) ::
+          result()
+  def run(encoded, context, seeds, additional_modules, timeout, target) do
+    settings = decode_settings(encoded)
     Process.register(self(), __MODULE__)
     forwarder = forwarder(settings)
     send(forwarder, {:ex_fuzz, :started, %{module: context.module, test: context.test}})
 
-    case fuzz(settings, context, seeds, timeout, target, forwarder) do
+    case fuzz(settings, seeds, additional_modules, timeout, target, forwarder) do
       {:done, stats} ->
         send(forwarder, {:ex_fuzz, :done, stats})
         :ok
@@ -85,10 +99,9 @@ defmodule ExFuzz.Worker do
     :ok
   end
 
-  defp fuzz(settings, context, seeds, timeout, target, forwarder) do
-    with :ok <- one_test(Keyword.fetch!(settings, :test), context),
-         {:ok, %{binaries: binaries, probes: probes}} <-
-           Instrument.instrument(Keyword.fetch!(settings, :modules)),
+  defp fuzz(settings, seeds, additional_modules, timeout, target, forwarder) do
+    with {:ok, modules} <- scope(additional_modules),
+         {:ok, %{binaries: binaries, probes: probes}} <- Instrument.instrument(modules),
          {:ok, engine} <- Engine.new(engine_opts(settings, probes, seeds)),
          :ok <- Instrument.load(binaries) do
       runner_opts =
@@ -100,14 +113,17 @@ defmodule ExFuzz.Worker do
     end
   end
 
-  # A `describe` line selects every test in the block.
-  defp one_test({_path, line}, %{describe_line: line}), do: {:error, {:describe_line, line}}
-  defp one_test(_test, _context), do: :ok
+  defp scope(additional_modules) do
+    case Scope.modules(additional_modules) do
+      [] -> {:error, :nothing_to_instrument}
+      modules -> {:ok, modules}
+    end
+  end
 
   defp engine_opts(settings, probes, seeds) do
     %{
       map_len: probes,
-      max_input_len: Keyword.fetch!(settings, :max_input_len),
+      max_input_len: Keyword.get(settings, :max_input_len, @default_max_input_len),
       rng_seed: Keyword.get(settings, :rng_seed),
       seeds: seeds
     }

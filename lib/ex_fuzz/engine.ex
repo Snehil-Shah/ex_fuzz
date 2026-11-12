@@ -11,12 +11,29 @@ defmodule ExFuzz.Engine do
   @type engine :: reference()
   @type outcome :: :ok | :crash | :timeout
   @type verdict :: :none | :corpus | :solution
-  @type engine_opts :: %{
+
+  @typedoc """
+  Engine options.
+
+    * `:map_len` - the number of probes. At least 1.
+    * `:max_input_len` - the upper bound on generated input length, in bytes. At least 1.
+    * `:rng_seed` - seeds the random number generator, for reproducible runs. `nil` seeds from the clock.
+    * `:seeds` - the initial corpus. If empty, the engine starts from a single empty input.
+  """
+  @type opts :: %{
           map_len: pos_integer(),
           max_input_len: pos_integer(),
           rng_seed: non_neg_integer() | nil,
           seeds: [binary()]
         }
+
+  @typedoc """
+  The engine's progress so far.
+
+    * `:corpus` - inputs in the corpus, seeds included.
+    * `:solutions` - inputs that crashed or timed out.
+    * `:executions` - inputs whose outcome has been reported.
+  """
   @type stats :: %{
           corpus: non_neg_integer(),
           solutions: non_neg_integer(),
@@ -45,7 +62,7 @@ defmodule ExFuzz.Engine do
   def coverage_get(_id), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc "Creates an engine."
-  @spec new(engine_opts()) :: {:ok, engine()} | {:error, String.t()}
+  @spec new(opts()) :: {:ok, engine()} | {:error, String.t()}
   def new(_opts), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """

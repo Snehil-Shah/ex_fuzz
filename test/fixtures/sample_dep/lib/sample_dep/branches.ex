@@ -1,4 +1,4 @@
-defmodule ExFuzz.Fixtures.Branches do
+defmodule SampleDep.Branches do
   @moduledoc false
 
   # Two paths through each kind of clause: function heads, fn, receive, and try/rescue.

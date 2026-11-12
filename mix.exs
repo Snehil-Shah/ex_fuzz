@@ -33,7 +33,7 @@ defmodule ExFuzz.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       # Fixture projects.
-      {:mock_dep, path: "test/fixtures/mock_dep", only: :test}
+      {:sample_dep, path: "test/fixtures/sample_dep", only: :test}
     ]
   end
 end

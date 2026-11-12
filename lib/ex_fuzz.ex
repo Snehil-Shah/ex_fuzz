@@ -7,9 +7,9 @@ defmodule ExFuzz do
         use ExFuzz
 
         @tag timeout: 100
-        fuzz "JSON never crashes", data <- binary(), seeds: ["{}", "[1]"] do
-          with {:ok, term} <- JSON.decode(data) do
-            assert JSON.decode!(JSON.encode!(term)) == term
+        fuzz "Jason never crashes", data <- binary(), seeds: ["{}", "[1]"] do
+          with {:ok, term} <- Jason.decode(data) do
+            assert Jason.decode!(Jason.encode!(term)) == term
           end
         end
       end
@@ -21,10 +21,10 @@ defmodule ExFuzz do
   To start fuzzing a target, point `mix fuzz` at the test by line or name:
 
       $ mix fuzz test/json_test.exs:6
-      $ mix fuzz test/json_test.exs:"fuzz JSON never crashes"
+      $ mix fuzz test/json_test.exs:"fuzz Jason never crashes"
   """
 
-  alias ExFuzz.{Executor, Worker}
+  alias ExFuzz.{Executor, Scope, Worker}
 
   # Worker environment settings. Defined by `ExFuzz.Coordinator` when dispatching fuzz workers.
   @worker_env "EX_FUZZ_WORKER"
@@ -52,15 +52,15 @@ defmodule ExFuzz do
 
   ## Examples
 
-      fuzz "JSON never crashes", data <- binary(), seeds: ["{}", "[1]"] do
-        with {:ok, term} <- JSON.decode(data) do
-          assert JSON.decode!(JSON.encode!(term)) == term
+      fuzz "Jason never crashes", data <- binary(), seeds: ["{}", "[1]"] do
+        with {:ok, term} <- Jason.decode(data) do
+          assert Jason.decode!(Jason.encode!(term)) == term
         end
       end
 
   You can start fuzzing the target using `mix fuzz`:
 
-      $ mix fuzz test/json_test.exs:"fuzz JSON never crashes"
+      $ mix fuzz test/json_test.exs:"fuzz Jason never crashes"
   """
   defmacro fuzz(message, input, context \\ quote(do: _), opts \\ [], contents) do
     {context, opts} =
@@ -68,21 +68,28 @@ defmodule ExFuzz do
         do: {quote(do: _), context},
         else: {context, opts}
 
-    define(message, input, context, Keyword.validate!(opts, seeds: []), contents)
+    define(message, input, context, Keyword.validate!(opts, seeds: []), contents, __CALLER__)
   end
 
-  defp define(message, input, context, opts, do: block) do
+  defp define(message, input, context, opts, [do: block], env) do
     var = input!(input)
+    # Instrumented along with the project.
+    additional_modules = Scope.modules_called_by(block, env)
     full_context = Macro.var(:context, __MODULE__)
     ExUnit.plural_rule("fuzz", "fuzz")
 
     body =
       quote do
         # Not a tail call, so the test's own line stays in stack traces.
-        ExFuzz.__run__(unquote(opts[:seeds]), unquote(full_context), fn unquote(var) ->
-          _ = unquote(block)
-          :ok
-        end)
+        ExFuzz.__run__(
+          unquote(opts[:seeds]),
+          unquote(additional_modules),
+          unquote(full_context),
+          fn unquote(var) ->
+            _ = unquote(block)
+            :ok
+          end
+        )
       end
 
     # Binds the user's pattern and the whole context, which carries `:input_timeout`.
@@ -118,13 +125,16 @@ defmodule ExFuzz do
   end
 
   @doc false
-  def __run__(seeds, context, fun) do
+  def __run__(seeds, additional_modules, context, fun) do
     timeout = input_timeout(context[:input_timeout])
 
     # If worker environment is defined, start the worker loop.
     case System.get_env(@worker_env) do
-      nil -> replay(seeds, timeout, fun)
-      settings -> run_fuzzer(settings, context, seeds, timeout, fun)
+      nil ->
+        replay(seeds, timeout, fun)
+
+      settings ->
+        run_fuzzer(settings, context, seeds, additional_modules, timeout, fun)
     end
   end
 
@@ -139,8 +149,8 @@ defmodule ExFuzz do
     :ok
   end
 
-  defp run_fuzzer(settings, context, seeds, timeout, fun) do
-    case Worker.run(settings, context, seeds, timeout, fun) do
+  defp run_fuzzer(settings, context, seeds, additional_modules, timeout, fun) do
+    case Worker.run(settings, context, seeds, additional_modules, timeout, fun) do
       :ok ->
         :ok
 

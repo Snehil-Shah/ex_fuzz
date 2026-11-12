@@ -1,4 +1,4 @@
-defmodule ExFuzz.Fixtures.Shadow do
+defmodule SampleDep.Shadow do
   @moduledoc false
 
   # Defines and calls `size/1`, an auto-imported BIF name: it must still call its own function.

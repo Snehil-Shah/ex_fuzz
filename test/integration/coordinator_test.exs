@@ -3,9 +3,6 @@ defmodule ExFuzz.Integration.CoordinatorTest do
 
   # Each test fuzzes a fuzz test of the fixture file in a worker node.
 
-  # `:peer` logs its control process exiting whenever the node ends.
-  @moduletag :capture_log
-
   import ExFuzz.TestHelpers
 
   alias ExFuzz.{Coordinator, Fixtures}
@@ -23,25 +20,21 @@ defmodule ExFuzz.Integration.CoordinatorTest do
   end
 
   # The coordinator blocks, so it runs in a task and relays events to the test.
-  defp coordinate(test, opts) do
+  defp coordinate(test, opts \\ []) do
     me = self()
     Task.async(fn -> Coordinator.run([report_to: me, test: test] ++ opts ++ @opts) end)
   end
 
-  defp coordinate_at(code, opts), do: coordinate({@fixture, line(code)}, opts)
+  defp coordinate_at(code, opts \\ []), do: coordinate({@fixture, line(code)}, opts)
 
   defp await(task), do: Task.await(task, 30_000)
 
   test "fuzzes the fuzz target, which fails in ExUnit with the input" do
-    original = Fixtures.Planted.module_info(:md5)
+    original = SampleDep.Planted.module_info(:md5)
 
     {input, output} =
       with_node_io(fn ->
-        task =
-          coordinate_at(~s(fuzz "finds the planted bug"),
-            modules: [Fixtures.Planted],
-            max_time: 10_000
-          )
+        task = coordinate_at(~s(fuzz "finds the planted bug"), max_time: 10_000)
 
         assert_receive {:ex_fuzz, :solution,
                         %{
@@ -57,17 +50,13 @@ defmodule ExFuzz.Integration.CoordinatorTest do
     assert output =~ "1) fuzz finds the planted bug (ExFuzz.Fixtures.FuzzTest)"
     assert output =~ ~r/\*\* \(ExFuzz.Error\) got RuntimeError \(planted\)\n\s+input: /
     assert output =~ "input: #{inspect(input)}\n"
-    assert Fixtures.Planted.module_info(:md5) == original, "instrumented only in the worker node"
+    assert SampleDep.Planted.module_info(:md5) == original, "instrumented only in the worker node"
   end
 
   test "relays stats while fuzzing" do
     with_node_io(fn ->
       task =
-        coordinate_at(~s(fuzz "never crashes"),
-          modules: [Fixtures.Classifier],
-          max_time: 300,
-          stats_interval: 50
-        )
+        coordinate_at(~s(fuzz "never crashes"), max_time: 300, stats_interval: 50)
 
       assert_receive {:ex_fuzz, :started,
                       %{module: Fixtures.FuzzTest, test: :"fuzz never crashes"}},
@@ -80,7 +69,7 @@ defmodule ExFuzz.Integration.CoordinatorTest do
 
   test ":stop sent to the coordinator stops fuzzing" do
     with_node_io(fn ->
-      task = coordinate_at(~s(fuzz "never crashes"), modules: [Fixtures.Classifier])
+      task = coordinate_at(~s(fuzz "never crashes"))
 
       assert_receive {:ex_fuzz, :stats, _}, 30_000
       send(task.pid, :stop)
@@ -90,59 +79,55 @@ defmodule ExFuzz.Integration.CoordinatorTest do
 
   test ":stop before fuzzing starts stops the worker node" do
     with_node_io(fn ->
-      task = coordinate_at(~s(fuzz "never crashes"), modules: [Fixtures.Classifier])
+      task = coordinate_at(~s(fuzz "never crashes"))
       send(task.pid, :stop)
       assert await(task) == {:error, :stopped}
     end)
   end
 
-  test "reports a setup failure" do
+  test "reports a fuzz test that calls nothing it can instrument" do
     with_node_io(fn ->
-      # The fixture's own module: `mix test` compiles it in memory, so it has no object code.
-      task = coordinate_at(~s(fuzz "never crashes"), modules: [Fixtures.FuzzTest])
-      assert {:error, {:no_object_code, Fixtures.FuzzTest}} = await(task)
+      task = coordinate_at(~s(fuzz "has nothing to instrument"))
+      assert await(task) == {:error, :nothing_to_instrument}
     end)
   end
 
   test "selects the fuzz test by any line of it, as `mix test path:line` does" do
     with_node_io(fn ->
-      line = line("Fixtures.Classifier.classify(data)")
-      task = coordinate({@fixture, line}, modules: [Fixtures.Classifier], max_execs: 100)
+      line = line("SampleDep.Classifier.classify(data)")
+      task = coordinate({@fixture, line}, max_execs: 100)
       assert {:done, %{engine: %{executions: 100}}} = await(task)
     end)
   end
 
   test "selects the fuzz test by its full name, as ExUnit prints it" do
     with_node_io(fn ->
-      task =
-        coordinate({@fixture, "fuzz in a describe never crashes either"},
-          modules: [Fixtures.Classifier],
-          max_execs: 100
-        )
+      task = coordinate({@fixture, "fuzz in a describe never crashes either"}, max_execs: 100)
 
       assert {:done, %{engine: %{executions: 100}}} = await(task)
-    end)
-  end
-
-  test "refuses a describe line, which selects every test in the block" do
-    with_node_io(fn ->
-      line = line(~s(describe "in a describe"))
-      task = coordinate_at(~s(describe "in a describe"), modules: [Fixtures.Classifier])
-      assert await(task) == {:error, {:describe_line, line}}
     end)
   end
 
   test "reports a run where no fuzz test fuzzed, with mix test's exit status" do
     {_result, output} =
       with_node_io(fn ->
-        task = coordinate({@fixture, "no such test"}, modules: [Fixtures.Classifier])
+        task = coordinate({@fixture, "no such test"})
         assert await(task) == {:not_started, {:exit_status, 1}}
 
-        task = coordinate_at(~s(test "not a fuzz test"), modules: [Fixtures.Classifier])
+        task = coordinate_at(~s(test "not a fuzz test"))
         assert await(task) == {:not_started, {:exit_status, 0}}
       end)
 
     assert output =~ "no test was executed"
+  end
+
+  test "passes :mix_args to the worker node's mix test" do
+    with_node_io(fn ->
+      task = coordinate_at(~s(fuzz "is slow"), mix_args: ["--timeout", "50"])
+
+      assert_receive {:ex_fuzz, :solution, %{outcome: {:timeout, _}}}, 30_000
+      assert {:done, %{engine: %{solutions: 1}}} = await(task)
+    end)
   end
 
   test "a worker node that dies hard writes its crash dump under _build" do
@@ -150,9 +135,7 @@ defmodule ExFuzz.Integration.CoordinatorTest do
     File.rm(dump)
 
     with_node_io(fn ->
-      task =
-        coordinate_at(~s(fuzz "kills the VM with a crash dump"), modules: [Fixtures.Halter])
-
+      task = coordinate_at(~s(fuzz "kills the VM with a crash dump"))
       assert {:node_down, {:exit_status, _}} = await(task)
     end)
 
@@ -162,8 +145,15 @@ defmodule ExFuzz.Integration.CoordinatorTest do
 
   test "reports a worker node whose VM dies" do
     with_node_io(fn ->
-      task = coordinate_at(~s(fuzz "kills the VM"), modules: [Fixtures.Halter])
+      task = coordinate_at(~s(fuzz "kills the VM"))
       assert {:node_down, {:exit_status, 7}} = await(task)
+    end)
+  end
+
+  test "reports a worker node killed by a signal, as the OOM killer does: 128 + 9" do
+    with_node_io(fn ->
+      task = coordinate_at(~s(fuzz "is killed by a signal"))
+      assert {:node_down, {:exit_status, 137}} = await(task)
     end)
   end
 end

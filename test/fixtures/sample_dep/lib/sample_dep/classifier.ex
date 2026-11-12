@@ -1,4 +1,4 @@
-defmodule ExFuzz.Fixtures.Classifier do
+defmodule SampleDep.Classifier do
   @moduledoc false
 
   # A branch on one line: line coverage can't tell the two outcomes apart, clause probes can.

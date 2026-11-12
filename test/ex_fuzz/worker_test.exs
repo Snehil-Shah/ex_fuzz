@@ -3,15 +3,13 @@ defmodule ExFuzz.WorkerTest do
 
   import ExFuzz.TestHelpers
 
-  alias ExFuzz.{Fixtures, Worker}
+  alias ExFuzz.Worker
 
   defp settings(overrides) do
     Keyword.merge(
       [
         origin: self(),
         io: self(),
-        test: {"test.exs", 1},
-        modules: [],
         max_input_len: 64,
         rng_seed: 1
       ],
@@ -19,18 +17,26 @@ defmodule ExFuzz.WorkerTest do
     )
   end
 
-  @context %{module: SomeTest, test: :"fuzz something", describe_line: nil}
+  @context %{module: SomeTest, test: :"fuzz something"}
 
   # Settings arrive encoded, as the coordinator hands them over.
-  defp run(settings, target, context \\ @context),
-    do: Worker.run(Worker.encode(settings), context, ["AAAA"], 1_000, target)
+  defp run(settings, target, additional_modules),
+    do:
+      Worker.run(
+        Worker.encode_settings(settings),
+        @context,
+        ["AAAA"],
+        additional_modules,
+        1_000,
+        target
+      )
 
   test "fuzzes the target, then pushes the solution and :done, in order" do
-    restore_on_exit(Fixtures.Planted)
-    settings = settings(modules: [Fixtures.Planted], max_time: 5_000)
+    restore_on_exit(SampleDep.Planted)
+    settings = settings(max_time: 5_000)
 
     assert {:solution, %{input: "FUZZ" <> _, outcome: {:crash, :error, %RuntimeError{}, _}}} =
-             run(settings, &Fixtures.Planted.check/1)
+             run(settings, &SampleDep.Planted.check/1, [SampleDep.Planted])
 
     origin = self()
     started = %{module: SomeTest, test: :"fuzz something"}
@@ -40,18 +46,22 @@ defmodule ExFuzz.WorkerTest do
   end
 
   test "pushes stats while fuzzing, and :done when a budget is spent" do
-    restore_on_exit(Fixtures.Classifier)
-    settings = settings(modules: [Fixtures.Classifier], max_time: 200, stats_interval: 20)
+    restore_on_exit(SampleDep.Classifier)
+    settings = settings(max_time: 200, stats_interval: 20)
 
-    assert run(settings, &Fixtures.Classifier.classify/1) == :ok
+    assert run(settings, &SampleDep.Classifier.classify/1, [SampleDep.Classifier]) == :ok
     assert_receive {:message, _, {:ex_fuzz, :stats, %{engine: %{executions: _}}}}
     assert_receive {:message, _, {:ex_fuzz, :done, %{engine: %{solutions: 0}}}}
   end
 
   test "stop/0 ends the run" do
-    restore_on_exit(Fixtures.Classifier)
-    settings = settings(modules: [Fixtures.Classifier], stats_interval: 20)
-    worker = Task.async(fn -> run(settings, &Fixtures.Classifier.classify/1) end)
+    restore_on_exit(SampleDep.Classifier)
+    settings = settings(stats_interval: 20)
+
+    worker =
+      Task.async(fn ->
+        run(settings, &SampleDep.Classifier.classify/1, [SampleDep.Classifier])
+      end)
 
     assert_receive {:message, _, {:ex_fuzz, :stats, _}}
     assert Worker.stop() == :ok
@@ -59,24 +69,13 @@ defmodule ExFuzz.WorkerTest do
     assert_receive {:message, _, {:ex_fuzz, :done, %{engine: %{solutions: 0}}}}
   end
 
-  test "reports a setup failure" do
-    assert run(settings(modules: [ExFuzz.NoSuchModule]), & &1) ==
-             {:error, {:no_object_code, ExFuzz.NoSuchModule}}
-
-    assert_receive {:message, _, {:ex_fuzz, :error, {:no_object_code, ExFuzz.NoSuchModule}}}
-  end
-
-  test "refuses to fuzz when the line selects a whole describe block" do
-    settings = settings(test: {"test.exs", 5}, modules: [Fixtures.Classifier])
-
-    assert run(settings, &Fixtures.Classifier.classify/1, %{@context | describe_line: 5}) ==
-             {:error, {:describe_line, 5}}
-
-    assert_receive {:message, _, {:ex_fuzz, :error, {:describe_line, 5}}}
+  test "reports a fuzz test that calls nothing it can instrument" do
+    assert run(settings([]), & &1, [Enum]) == {:error, :nothing_to_instrument}
+    assert_receive {:message, _, {:ex_fuzz, :error, :nothing_to_instrument}}
   end
 
   test "frees the registered name when it returns" do
-    run(settings(modules: [ExFuzz.NoSuchModule]), & &1)
+    run(settings([]), & &1, [])
     assert Process.whereis(Worker) == nil
   end
 end

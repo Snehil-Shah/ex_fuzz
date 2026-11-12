@@ -1,4 +1,4 @@
-defmodule ExFuzz.Fixtures.Planted do
+defmodule SampleDep.Planted do
   @moduledoc false
 
   # Raises only on inputs starting with "FUZZ".
