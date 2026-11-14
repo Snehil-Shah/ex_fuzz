@@ -32,7 +32,7 @@ defmodule ExFuzz.MixProject do
   defp package do
     [
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => @source_url},
+      links: %{"GitHub" => @source_url, "Sponsor" => "https://github.com/sponsors/Snehil-Shah"},
       files: ~w(
         lib
         mix.exs
