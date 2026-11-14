@@ -1,7 +1,9 @@
 defmodule ExFuzz.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  # NOTE: Build time configuration. Version is patched during build.
+  @version "0.0.0"
+
   @source_url "https://github.com/Snehil-Shah/ex_fuzz"
 
   def project do
@@ -21,7 +23,28 @@ defmodule ExFuzz.MixProject do
       name: "ExFuzz",
       source_url: @source_url,
       homepage_url: @source_url,
-      docs: docs()
+      docs: docs(),
+      package: package()
+    ]
+  end
+
+  # Run "mix help hex.publish" to learn about packages.
+  defp package do
+    [
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => @source_url},
+      files: ~w(
+        lib
+        mix.exs
+        README.md
+        LICENSE
+        checksum-*.exs
+        native/engine/src
+        native/engine/Cargo.toml
+        Cargo.toml
+        Cargo.lock
+        .cargo
+      )
     ]
   end
 

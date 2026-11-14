@@ -30,3 +30,6 @@ ex_fuzz-*.tar
 
 # Rust binary artifacts
 /target/
+
+# Generated at release (via "mix rustler_precompiled.download").
+/checksum-*.exs
