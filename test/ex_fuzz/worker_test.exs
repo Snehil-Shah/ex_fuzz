@@ -71,7 +71,7 @@ defmodule ExFuzz.WorkerTest do
         run(settings, &SampleDep.Classifier.classify/1, [SampleDep.Classifier])
       end)
 
-    assert_receive {:message, _, {:ex_fuzz, :stats, _}}
+    assert_receive {:message, _, {:ex_fuzz, :stats, _}}, 5_000
     assert Worker.stop() == :ok
     assert Task.await(worker) == :ok
     assert_receive {:message, _, {:ex_fuzz, :done, %{engine: %{solutions: 0}}}}
