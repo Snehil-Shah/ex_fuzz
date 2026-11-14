@@ -5,21 +5,23 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     rc::Rc,
     sync::atomic::AtomicU8,
 };
 
 use libafl::{
     StdFuzzer,
-    corpus::{Corpus, InMemoryCorpus, Testcase},
+    corpus::{Corpus, InMemoryCorpus},
     events::NopEventManager,
     executors::ExitKind,
     feedback_or_fast,
     feedbacks::{CrashFeedback, MaxMapFeedback, TimeoutFeedback},
+    fuzzer::{ExecuteInputResult, ExecutionProcessor},
     inputs::{BytesInput, HasTargetBytes},
     mutators::{HavocScheduledMutator, havoc_mutations},
     observers::StdMapObserver,
-    schedulers::{QueueScheduler, Scheduler},
+    schedulers::QueueScheduler,
     stages::push::{PushStage, StdMutationalPushStage},
     state::{HasCorpus, HasExecutions, HasMaxSize, HasSolutions, StdState},
 };
@@ -60,6 +62,8 @@ struct LibAflDriver<Z, S, EM, OT, PS> {
     /// The mutational push stage that produces inputs.
     /// Maps to [`StdMutationalPushStage`].
     stage: PS,
+    /// Seeds not yet run. `next` hands out the front one, `report` pops it once done.
+    seeds: VecDeque<BytesInput>,
     /// Input handed out by the last `next`, awaiting its outcome.
     pending: Option<BytesInput>,
     /// Whether the push stage is mid-round (between `init` and `deinit`).
@@ -74,10 +78,11 @@ unsafe impl<Z, S, EM, OT, PS> Send for LibAflDriver<Z, S, EM, OT, PS> {}
 
 impl<Z, S, EM, OT, PS> Driver for LibAflDriver<Z, S, EM, OT, PS>
 where
+    Z: ExecutionProcessor<EM, BytesInput, OT, S>,
     PS: PushStage<EM, BytesInput, OT, S, Z>,
     S: HasCorpus<BytesInput> + HasSolutions<BytesInput> + HasExecutions,
 {
-    /// Hand the finished run to LibAFL (`post_exec`) and work out what it did with the input.
+    /// Hand the finished run to LibAFL and work out what it did with the input.
     fn report(&mut self, outcome: Outcome) -> Result<Verdict, Error> {
         let input = self
             .pending
@@ -86,26 +91,38 @@ where
         *self.state.executions_mut() += 1;
         let corpus_before = self.state.corpus().count();
         let solutions_before = self.state.solutions().count();
-        self.stage.post_exec(
-            &mut self.fuzzer,
-            &mut self.state,
-            &mut self.mgr,
-            &mut self.observers,
-            input,
-            outcome.into(),
-        )?;
+        let exit_kind = outcome.into();
+
+        // Add to corpus if it's a seed.
+        let seed = self.seeds.pop_front().is_some();
+        if seed {
+            self.add_seed(&input, exit_kind)?;
+        } else {
+            self.stage.post_exec(
+                &mut self.fuzzer,
+                &mut self.state,
+                &mut self.mgr,
+                &mut self.observers,
+                input,
+                exit_kind,
+            )?;
+        }
+
         Ok(if self.state.solutions().count() > solutions_before {
             Verdict::Solution
-        } else if self.state.corpus().count() > corpus_before {
+        } else if !seed && self.state.corpus().count() > corpus_before {
             Verdict::Corpus
         } else {
             Verdict::None
         })
     }
 
-    /// Get the next mutated input from the push stage (`pre_exec`) and keep it pending.
+    /// Hand out the next seed or mutated input from LibAFL.
     fn next(&mut self) -> Result<Vec<u8>, Error> {
-        let input = self.next_input()?;
+        let input = match self.seeds.front() {
+            Some(seed) => seed.clone(),
+            None => self.next_input()?,
+        };
         let bytes = input.target_bytes().to_slice().to_vec();
         self.pending = Some(input);
         Ok(bytes)
@@ -127,9 +144,33 @@ where
 
 impl<Z, S, EM, OT, PS> LibAflDriver<Z, S, EM, OT, PS>
 where
+    Z: ExecutionProcessor<EM, BytesInput, OT, S>,
     PS: PushStage<EM, BytesInput, OT, S, Z>,
     S: HasCorpus<BytesInput> + HasSolutions<BytesInput> + HasExecutions,
 {
+    /// Add a seed to the corpus after its run.
+    fn add_seed(&mut self, input: &BytesInput, exit_kind: ExitKind) -> Result<(), Error> {
+        let result = match self.fuzzer.check_results(
+            &mut self.state,
+            &mut self.mgr,
+            input,
+            &self.observers,
+            &exit_kind,
+        )? {
+            ExecuteInputResult::None => ExecuteInputResult::Corpus,
+            result => result,
+        };
+        self.fuzzer.process_execution(
+            &mut self.state,
+            &mut self.mgr,
+            input,
+            &result,
+            &exit_kind,
+            &self.observers,
+        )?;
+        Ok(())
+    }
+
     /// Get the next mutated input from the push stage, starting a new round when needed.
     fn next_input(&mut self) -> Result<BytesInput, Error> {
         loop {
@@ -190,20 +231,13 @@ pub(crate) fn build(
     )?;
     state.set_max_size(config.max_input_len);
 
-    let mut scheduler = QueueScheduler::new();
-    let seeds = if config.seeds.is_empty() {
-        vec![Vec::new()]
+    let seeds: VecDeque<BytesInput> = if config.seeds.is_empty() {
+        VecDeque::from([BytesInput::new(Vec::new())])
     } else {
-        config.seeds
+        config.seeds.into_iter().map(BytesInput::new).collect()
     };
-    for seed in seeds {
-        let id = state
-            .corpus_mut()
-            .add(Testcase::new(BytesInput::new(seed)))?;
-        Scheduler::<BytesInput, _>::on_add(&mut scheduler, &mut state, id)?;
-    }
 
-    let fuzzer = StdFuzzer::new(scheduler, feedback, objective);
+    let fuzzer = StdFuzzer::new(QueueScheduler::new(), feedback, objective);
     let stage = StdMutationalPushStage::new(
         HavocScheduledMutator::new(havoc_mutations()),
         // Only used by the `Iterator` path, which we don't use.
@@ -216,6 +250,7 @@ pub(crate) fn build(
         mgr: NopEventManager::new(),
         observers: tuple_list!(observer),
         stage,
+        seeds,
         pending: None,
         in_round: false,
     }))
@@ -267,6 +302,107 @@ mod tests {
         for _ in 0..10 * DEFAULT_MUTATIONAL_MAX_ITERATIONS {
             driver.next().unwrap();
             driver.report(Outcome::Ok).unwrap();
+        }
+    }
+
+    /// A driver seeded with `seeds`.
+    fn seeded(seeds: &[&[u8]]) -> Box<dyn Driver> {
+        let seeds = seeds.iter().map(|seed| seed.to_vec()).collect();
+        build(Config { seeds, ..config() }, coverage::init(8)).unwrap()
+    }
+
+    /// Run one input that ends with `outcome`. Returns the input and its verdict.
+    fn run(driver: &mut Box<dyn Driver>, outcome: Outcome) -> (Vec<u8>, Verdict) {
+        let input = driver.next().unwrap();
+        (input, driver.report(outcome).unwrap())
+    }
+
+    #[test]
+    fn seeds_run_first_as_they_are_and_in_order() {
+        let _lock = lock_map();
+        let mut driver = seeded(&[b"one", b"two", b"three"]);
+        for seed in [&b"one"[..], b"two", b"three"] {
+            assert_eq!(run(&mut driver, Outcome::Ok).0, seed);
+        }
+    }
+
+    #[test]
+    fn starts_from_an_empty_input_without_seeds() {
+        let _lock = lock_map();
+        let mut driver = seeded(&[]);
+        assert_eq!(run(&mut driver, Outcome::Ok).0, b"");
+    }
+
+    #[test]
+    fn every_seed_joins_the_corpus_without_being_a_new_find() {
+        let _lock = lock_map();
+        let mut driver = seeded(&[b"one", b"two", b"three"]);
+        assert_eq!(
+            driver.stats().corpus,
+            0,
+            "nothing is in the corpus before it has run"
+        );
+
+        let verdicts: Vec<Verdict> = (0..3).map(|_| run(&mut driver, Outcome::Ok).1).collect();
+
+        assert_eq!(verdicts, [Verdict::None; 3], "a seed is not a new find");
+        assert_eq!(
+            driver.stats().corpus,
+            3,
+            "even though none reached new coverage"
+        );
+    }
+
+    #[test]
+    fn a_failing_seed_is_a_solution() {
+        let _lock = lock_map();
+        let mut driver = seeded(&[b"one"]);
+        assert_eq!(run(&mut driver, Outcome::Crash).1, Verdict::Solution);
+        assert_eq!(driver.stats().solutions, 1);
+        assert_eq!(
+            driver.stats().corpus,
+            0,
+            "a failing seed is not a corpus entry"
+        );
+    }
+
+    #[test]
+    fn mutation_starts_once_every_seed_has_run() {
+        let _lock = lock_map();
+        let mut driver = seeded(&[b"one", b"two"]);
+        run(&mut driver, Outcome::Ok);
+        run(&mut driver, Outcome::Ok);
+        assert_eq!(driver.stats().corpus, 2);
+
+        run(&mut driver, Outcome::Ok);
+        assert_eq!(driver.stats().executions, 3, "the two seeds and a mutation");
+    }
+
+    #[test]
+    fn crashes_and_timeouts_are_solutions() {
+        let _lock = lock_map();
+        let mut driver = seeded(&[b"AAAA"]);
+        run(&mut driver, Outcome::Ok);
+
+        assert_eq!(run(&mut driver, Outcome::Crash).1, Verdict::Solution);
+        assert_eq!(run(&mut driver, Outcome::Timeout).1, Verdict::Solution);
+        assert_eq!(driver.stats().solutions, 2);
+    }
+
+    #[test]
+    fn generated_inputs_respect_max_input_len() {
+        let _lock = lock_map();
+        let mut driver = build(
+            Config {
+                max_input_len: 16,
+                ..config()
+            },
+            coverage::init(8),
+        )
+        .unwrap();
+        for _ in 0..20_000 {
+            let (input, _verdict) = run(&mut driver, Outcome::Ok);
+            assert!(input.len() <= 16, "input of {} bytes", input.len());
         }
     }
 }

@@ -7,7 +7,7 @@ defmodule ExFuzz.Runner do
 
   alias ExFuzz.{Engine, Executor}
 
-  @default_stats_interval 1_000
+  @default_refresh_interval 1_000
 
   @type solution :: %{input: binary(), outcome: Executor.outcome()}
   @type stats :: %{engine: Engine.stats(), elapsed_ms: non_neg_integer()}
@@ -16,37 +16,41 @@ defmodule ExFuzz.Runner do
   @type option ::
           Executor.option()
           | {:report_to, Process.dest()}
+          | {:corpus_to, Process.dest()}
           | budget()
-          | {:stats_interval, pos_integer()}
+          | {:refresh_interval, pos_integer()}
 
   @doc """
   Fuzzes `target` with `engine` until an input crashes or times out,
   a budget is spent, or this process receives `:stop`.
 
-  Sends `{:ex_fuzz, :stats, stats}` to `:report_to` every `:stats_interval`.
+  Every `:refresh_interval`, sends `{:ex_fuzz, :stats, stats}` to `:report_to` and new inputs to `:corpus_to`.
 
   Returns the final stats, with the crashing input if there was one.
 
   Options:
     * `:report_to` (required) - where stats are sent.
+    * `:corpus_to` - where inputs that reach new coverage are sent, as `{:ex_fuzz, :corpus, inputs}`.
     * `:timeout` (required), `:min_heap_size` - passed to `ExFuzz.Executor.run/3`.
     * `t:budget/0` - `:max_execs`, or `:max_time` in milliseconds. Without either, runs until `:stop`.
-    * `:stats_interval` - milliseconds between stats messages. Defaults to #{@default_stats_interval}.
+    * `:refresh_interval` - milliseconds between refreshes. Defaults to #{@default_refresh_interval}.
   """
   @spec run(Engine.engine(), Executor.target(), [option()]) :: result()
   def run(engine, target, opts) do
     max_time = Keyword.get(opts, :max_time)
-    stats_interval = Keyword.get(opts, :stats_interval, @default_stats_interval)
+    refresh_interval = Keyword.get(opts, :refresh_interval, @default_refresh_interval)
 
     state = %{
       engine: engine,
       target: target,
       executor_opts: Keyword.take(opts, [:timeout, :min_heap_size]),
       report_to: Keyword.fetch!(opts, :report_to),
+      corpus_to: Keyword.get(opts, :corpus_to),
+      found: [],
       max_execs: Keyword.get(opts, :max_execs),
-      stats_interval: stats_interval,
+      refresh_interval: refresh_interval,
       deadline_timer: max_time && :erlang.start_timer(max_time, self(), :deadline),
-      stats_timer: :erlang.start_timer(stats_interval, self(), :stats),
+      refresh_timer: :erlang.start_timer(refresh_interval, self(), :refresh),
       started: now(),
       execs: 0
     }
@@ -56,7 +60,7 @@ defmodule ExFuzz.Runner do
 
   defp loop(%{execs: execs, max_execs: execs} = state), do: {:done, close(state)}
 
-  defp loop(%{deadline_timer: deadline, stats_timer: stats} = state) do
+  defp loop(%{deadline_timer: deadline, refresh_timer: refresh} = state) do
     receive do
       :stop ->
         {:done, close(state)}
@@ -64,10 +68,10 @@ defmodule ExFuzz.Runner do
       {:timeout, ^deadline, :deadline} ->
         {:done, close(%{state | deadline_timer: nil})}
 
-      {:timeout, ^stats, :stats} ->
+      {:timeout, ^refresh, :refresh} ->
         send(state.report_to, {:ex_fuzz, :stats, stats(state)})
-        timer = :erlang.start_timer(state.stats_interval, self(), :stats)
-        run_input(%{state | stats_timer: timer})
+        timer = :erlang.start_timer(state.refresh_interval, self(), :refresh)
+        run_input(flush(%{state | refresh_timer: timer}))
     after
       0 -> run_input(state)
     end
@@ -80,15 +84,25 @@ defmodule ExFuzz.Runner do
 
     # The first failure ends the run.
     case {outcome, Engine.report(state.engine, engine_outcome(outcome))} do
+      {:ok, :corpus} -> loop(%{state | found: [input | state.found]})
       {:ok, _verdict} -> loop(state)
       {_failure, :solution} -> {:solution, %{input: input, outcome: outcome}, close(state)}
       {_failure, _verdict} -> {:done, close(state)}
     end
   end
 
-  # Cancels the timers and returns the final stats.
+  # Hands the inputs found since the last flush to `:corpus_to`.
+  defp flush(%{found: []} = state), do: state
+
+  defp flush(state) do
+    if state.corpus_to, do: send(state.corpus_to, {:ex_fuzz, :corpus, state.found})
+    %{state | found: []}
+  end
+
+  # Flushes, cancels the timers and returns the final stats.
   defp close(state) do
-    cancel(state.stats_timer)
+    flush(state)
+    cancel(state.refresh_timer)
     cancel(state.deadline_timer)
     stats(state)
   end

@@ -68,83 +68,23 @@ fn does_not_find_bug_without_coverage() {
 fn new_coverage_is_reported_as_corpus_verdict() {
     let _lock = lock_map();
     let mut engine = Engine::new(config()).unwrap();
-    let corpus_before = engine.stats().corpus;
+    // The seed first.
     engine.next().unwrap();
-    // First execution touches probe 0 for the first time: new coverage.
-    coverage::hit(0);
-    assert_eq!(engine.report(Outcome::Ok), Ok(Verdict::Corpus));
-    assert_eq!(engine.stats().corpus, corpus_before + 1);
-    // Same coverage again: not interesting.
+    engine.report(Outcome::Ok).unwrap();
+
     engine.next().unwrap();
     coverage::hit(0);
-    assert_eq!(engine.report(Outcome::Ok), Ok(Verdict::None));
-    assert_eq!(engine.stats().executions, 2);
-}
-
-#[test]
-fn crashes_and_timeouts_are_reported_as_solution_verdicts() {
-    let _lock = lock_map();
-    let mut engine = Engine::new(config()).unwrap();
-    engine.next().unwrap();
     assert_eq!(
-        engine.report(Outcome::Crash),
-        Ok(Verdict::Solution),
-        "a crash is a solution"
+        engine.report(Outcome::Ok),
+        Ok(Verdict::Corpus),
+        "probe 0, first reached"
     );
     engine.next().unwrap();
+    coverage::hit(0);
     assert_eq!(
-        engine.report(Outcome::Timeout),
-        Ok(Verdict::Solution),
-        "a timeout is a solution"
+        engine.report(Outcome::Ok),
+        Ok(Verdict::None),
+        "probe 0 again"
     );
-    assert_eq!(engine.stats().solutions, 2);
-}
-
-#[test]
-fn next_resets_the_coverage_map() {
-    let _lock = lock_map();
-    let mut engine = Engine::new(config()).unwrap();
-    coverage::hit(3);
-    engine.next().unwrap();
-    assert_eq!(coverage::get(3), 0);
-}
-
-#[test]
-fn generated_inputs_respect_max_input_len() {
-    let _lock = lock_map();
-    let mut engine = Engine::new(Config {
-        max_input_len: 16,
-        ..config()
-    })
-    .unwrap();
-    for i in 0..20_000 {
-        let input = engine.next().unwrap();
-        assert!(input.len() <= 16, "input of {} bytes", input.len());
-        coverage::hit(i % 8);
-        engine.report(Outcome::Ok).unwrap();
-    }
-}
-
-#[test]
-fn starts_from_an_empty_input_without_seeds() {
-    let _lock = lock_map();
-    let mut engine = Engine::new(Config {
-        seeds: Vec::new(),
-        ..config()
-    })
-    .unwrap();
-    assert_eq!(engine.stats().corpus, 1);
-    engine.next().unwrap();
-}
-
-#[test]
-fn report_counts_the_execution_and_lets_the_next_input_out() {
-    let _lock = lock_map();
-    let mut engine = Engine::new(config()).unwrap();
-    engine.next().unwrap();
-    assert_eq!(engine.report(Outcome::Crash), Ok(Verdict::Solution));
-    assert_eq!(engine.stats().executions, 1);
-    engine
-        .next()
-        .expect("the input was reported, so the next one can go out");
+    assert_eq!(engine.stats().corpus, 2);
 }

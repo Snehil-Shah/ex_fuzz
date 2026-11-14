@@ -24,7 +24,7 @@ defmodule ExFuzz do
       $ mix fuzz test/json_test.exs:"fuzz Jason never crashes"
   """
 
-  alias ExFuzz.{Executor, Scope, Worker}
+  alias ExFuzz.{Corpus, Executor, Scope, Worker}
 
   # Worker environment settings. Defined by `ExFuzz.Coordinator` when dispatching fuzz workers.
   @worker_env "EX_FUZZ_WORKER"
@@ -131,18 +131,24 @@ defmodule ExFuzz do
     # If worker environment is defined, start the worker loop.
     case System.get_env(@worker_env) do
       nil ->
-        replay(seeds, timeout, fun)
+        replay(seeds, context, timeout, fun)
 
       settings ->
         run_fuzzer(settings, context, seeds, additional_modules, timeout, fun)
     end
   end
 
-  defp replay(seeds, timeout, fun) do
-    for seed <- seeds do
-      case Executor.run(fun, seed, timeout: timeout) do
+  defp replay(seeds, context, timeout, fun) do
+    corpus = Corpus.load(context.module, context.test)
+
+    inputs =
+      Enum.map(seeds, &{&1, "seed:  " <> inspect(&1)}) ++
+        for {path, input} <- corpus, do: {input, "seed:  #{inspect(input)}\nfile:  #{path}"}
+
+    for {input, label} <- inputs do
+      case Executor.run(fun, input, timeout: timeout) do
         :ok -> :ok
-        failure -> fail(failure, timeout, "seed:  " <> inspect(seed))
+        failure -> fail(failure, timeout, label)
       end
     end
 
@@ -154,8 +160,9 @@ defmodule ExFuzz do
       :ok ->
         :ok
 
-      {:solution, %{input: input, outcome: failure}} ->
-        fail(failure, timeout, "input: " <> inspect(input))
+      {:solution, %{input: input, outcome: failure}, path} ->
+        rerun = "mix test #{Path.relative_to_cwd(context.file)}:#{context.line}"
+        fail(failure, timeout, "input: #{inspect(input)}\nfile:  #{path}\nrerun: #{rerun}")
 
       {:error, reason} ->
         raise Error, "could not start fuzzing: #{inspect(reason)}"

@@ -3,9 +3,9 @@ defmodule ExFuzz.Coordinator do
 
   # Runs a fuzz test in a worker node, a child VM running `mix test`.
 
-  alias ExFuzz.{Runner, Worker}
+  alias ExFuzz.{Config, Runner, Worker}
 
-  @crash_dump "_build/ex_fuzz/erl_crash.dump"
+  @crash_dump_file "erl_crash.dump"
 
   @typedoc "A fuzz test, by the line it is on or by its name."
   @type test :: {Path.t(), pos_integer() | String.t()}
@@ -38,7 +38,7 @@ defmodule ExFuzz.Coordinator do
     {mix_args, opts} = Keyword.pop(opts, :mix_args, [])
     {test, opts} = Keyword.pop!(opts, :test)
     settings = [origin: self()] ++ opts
-    File.mkdir_p!(Path.dirname(@crash_dump))
+    File.mkdir_p!(Config.get(:crash_dump_dir))
 
     {:ok, peer, _node} =
       :peer.start(%{
@@ -48,7 +48,7 @@ defmodule ExFuzz.Coordinator do
         env: [
           {~c"MIX_ENV", ~c"test"},
           {~c"EX_FUZZ_WORKER", to_charlist(Worker.encode_settings(settings))},
-          {~c"ERL_CRASH_DUMP", to_charlist(Path.expand(@crash_dump))}
+          {~c"ERL_CRASH_DUMP", to_charlist(Path.expand(crash_dump()))}
         ],
         post_process_args: &mix_test(&1, select(test) ++ mix_args)
       })
@@ -64,6 +64,10 @@ defmodule ExFuzz.Coordinator do
       :logger.remove_primary_filter(__MODULE__)
     end
   end
+
+  @doc "Path to the crash dump file created during fuzzing."
+  @spec crash_dump() :: Path.t()
+  def crash_dump, do: Path.join(Config.get(:crash_dump_dir), @crash_dump_file)
 
   defp elixir_bin(name), do: :filename.join([:code.lib_dir(:elixir), ~c"../../bin", name])
 

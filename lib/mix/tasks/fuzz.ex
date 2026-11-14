@@ -22,7 +22,7 @@ defmodule Mix.Tasks.Fuzz do
   alias ExFuzz.Coordinator
 
   @switches [max_time: :integer, max_runs: :integer, timeout: :integer, trace: :boolean]
-  @stats_interval 3_000
+  @refresh_interval 3_000
 
   @impl Mix.Task
   def run(args) do
@@ -32,7 +32,7 @@ defmodule Mix.Tasks.Fuzz do
     # TODO: This can be removed once we support parallel fuzzing with describe blocks.
     test = argv |> parse_test!() |> check_test!()
 
-    [test: test, stats_interval: @stats_interval, mix_args: mix_args(opts)]
+    [test: test, refresh_interval: @refresh_interval, mix_args: mix_args(opts)]
     |> Keyword.merge(budget(opts))
     |> fuzz()
     |> report()
@@ -172,7 +172,7 @@ defmodule Mix.Tasks.Fuzz do
   defp report({:node_down, reason}) do
     Mix.raise(
       "The worker node's VM died while fuzzing: #{ending(reason)}. " <>
-        "Crash dump: _build/ex_fuzz/erl_crash.dump"
+        "Crash dump: #{Coordinator.crash_dump()}"
     )
   end
 

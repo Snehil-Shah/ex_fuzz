@@ -84,8 +84,24 @@ defmodule ExFuzz.EngineTest do
     assert corpus > 1
   end
 
+  # Runs the engine's only seed, so the next input is a mutation.
+  defp run_the_seed(engine) do
+    Engine.next(engine)
+    Engine.report(engine, :ok)
+  end
+
+  test "hands out the seeds first and adds them to corpus" do
+    {:ok, engine} = Engine.new(opts(%{seeds: ["one", "two"]}))
+    assert Engine.next(engine) == "one"
+    assert Engine.report(engine, :ok) == :none
+    assert Engine.next(engine) == "two"
+    assert Engine.report(engine, :ok) == :none
+    assert %{corpus: 2} = Engine.stats(engine)
+  end
+
   test "reports new coverage as a :corpus verdict" do
     {:ok, engine} = Engine.new(opts())
+    run_the_seed(engine)
     Engine.next(engine)
     Engine.hit(0)
     assert Engine.report(engine, :ok) == :corpus
@@ -96,6 +112,7 @@ defmodule ExFuzz.EngineTest do
 
   test "reports crashes and timeouts as :solution verdicts" do
     {:ok, engine} = Engine.new(opts())
+    run_the_seed(engine)
     Engine.next(engine)
     assert Engine.report(engine, :crash) == :solution
     Engine.next(engine)

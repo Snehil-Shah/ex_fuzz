@@ -53,12 +53,20 @@ defmodule ExFuzzTest do
     fuzz "fails in a call", data <- binary(), seeds: ["not a number"] do
       String.to_integer(data)
     end
+
+    fuzz "fails only on a saved input", data <- binary(), seeds: ["ok"] do
+      if data == "FAIL", do: raise("found")
+    end
   end
+
+  import ExFuzz.TestHelpers
+
+  alias ExFuzz.Corpus
 
   # Calls an example as ExUnit would.
   defp run(name, context \\ %{}) do
     %{tags: tags} = Enum.find(Examples.__ex_unit__().tests, &(&1.name == name))
-    apply(Examples, name, [Map.merge(tags, context)])
+    apply(Examples, name, [Map.merge(tags, Map.merge(%{module: Examples, test: name}, context))])
   end
 
   # A real fuzz test, run by this suite.
@@ -140,5 +148,14 @@ defmodule ExFuzzTest do
       end
       """)
     end
+  end
+
+  test "replays the test's corpus after its seeds" do
+    on_exit(fn -> clear_corpus(Examples) end)
+    run(:"fuzz fails only on a saved input")
+
+    path = Corpus.save(Examples, :"fuzz fails only on a saved input", "FAIL")
+    error = assert_raise ExFuzz.Error, fn -> run(:"fuzz fails only on a saved input") end
+    assert error.message == ~s|got RuntimeError (found)\nseed:  "FAIL"\nfile:  #{path}|
   end
 end

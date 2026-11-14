@@ -3,7 +3,7 @@ defmodule ExFuzz.TestHelpers do
 
   import ExUnit.Callbacks, only: [on_exit: 1]
 
-  alias ExFuzz.Engine
+  alias ExFuzz.{Config, Engine}
 
   @engine_defaults %{map_len: 1, max_input_len: 64, rng_seed: 1, seeds: ["AAAA"]}
 
@@ -23,6 +23,13 @@ defmodule ExFuzz.TestHelpers do
 
   @doc "Restores `modules` when the test ends."
   def restore_on_exit(modules), do: on_exit(fn -> restore(modules) end)
+
+  @doc "Clears corpus and cache for `module`."
+  def clear_corpus(module) do
+    for key <- [:corpus_dir, :cache_dir] do
+      File.rm_rf!(Path.join(Config.get(key), inspect(module)))
+    end
+  end
 
   @doc """
   Like `ExUnit.CaptureIO.with_io/1`, for worker nodes started inside `fun`.

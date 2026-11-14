@@ -12,17 +12,24 @@ defmodule ExFuzz.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       # ExFuzz's macros call ExUnit, and `mix fuzz` and the worker call Mix.
-      dialyzer: [plt_add_apps: [:ex_unit, :mix]]
+      dialyzer: [plt_add_apps: [:ex_unit, :mix]],
+      ex_fuzz: ex_fuzz(Mix.env())
     ]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
+  # Artifacts from fixtures.
+  defp ex_fuzz(:test),
+    do: [corpus_dir: "tmp/fuzz/corpus", cache_dir: "tmp/fuzz/cache", crash_dump_dir: "tmp/fuzz"]
+
+  defp ex_fuzz(_), do: []
+
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger, :crypto]
     ]
   end
 

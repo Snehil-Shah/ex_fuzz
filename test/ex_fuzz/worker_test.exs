@@ -3,7 +3,7 @@ defmodule ExFuzz.WorkerTest do
 
   import ExFuzz.TestHelpers
 
-  alias ExFuzz.Worker
+  alias ExFuzz.{Corpus, Worker}
 
   defp settings(overrides) do
     Keyword.merge(
@@ -18,6 +18,11 @@ defmodule ExFuzz.WorkerTest do
   end
 
   @context %{module: SomeTest, test: :"fuzz something"}
+
+  setup do
+    clear_corpus(SomeTest)
+    on_exit(fn -> clear_corpus(SomeTest) end)
+  end
 
   # Settings arrive encoded, as the coordinator hands them over.
   defp run(settings, target, additional_modules),
@@ -35,8 +40,11 @@ defmodule ExFuzz.WorkerTest do
     restore_on_exit(SampleDep.Planted)
     settings = settings(max_time: 5_000)
 
-    assert {:solution, %{input: "FUZZ" <> _, outcome: {:crash, :error, %RuntimeError{}, _}}} =
+    assert {:solution,
+            %{input: "FUZZ" <> _ = input, outcome: {:crash, :error, %RuntimeError{}, _}}, path} =
              run(settings, &SampleDep.Planted.check/1, [SampleDep.Planted])
+
+    assert {path, input} in Corpus.load(SomeTest, :"fuzz something"), "saved to the corpus"
 
     origin = self()
     started = %{module: SomeTest, test: :"fuzz something"}
@@ -47,7 +55,7 @@ defmodule ExFuzz.WorkerTest do
 
   test "pushes stats while fuzzing, and :done when a budget is spent" do
     restore_on_exit(SampleDep.Classifier)
-    settings = settings(max_time: 200, stats_interval: 20)
+    settings = settings(max_time: 200, refresh_interval: 20)
 
     assert run(settings, &SampleDep.Classifier.classify/1, [SampleDep.Classifier]) == :ok
     assert_receive {:message, _, {:ex_fuzz, :stats, %{engine: %{executions: _}}}}
@@ -56,7 +64,7 @@ defmodule ExFuzz.WorkerTest do
 
   test "stop/0 ends the run" do
     restore_on_exit(SampleDep.Classifier)
-    settings = settings(stats_interval: 20)
+    settings = settings(refresh_interval: 20)
 
     worker =
       Task.async(fn ->

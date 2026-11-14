@@ -5,9 +5,15 @@ defmodule ExFuzz.Integration.CoordinatorTest do
 
   import ExFuzz.TestHelpers
 
-  alias ExFuzz.{Coordinator, Fixtures}
+  alias ExFuzz.{Coordinator, Corpus, Fixtures}
 
-  @fixture "test/support/fixtures/fuzz_test.exs"
+  @fixture "test/fixtures/fuzz_fixture.exs"
+
+  setup do
+    clear_corpus(ExFuzz.Fixtures.FuzzTest)
+    on_exit(fn -> clear_corpus(ExFuzz.Fixtures.FuzzTest) end)
+  end
+
   @opts [max_input_len: 64, rng_seed: 1]
 
   # The first line of the fixture that contains `code`.
@@ -50,13 +56,40 @@ defmodule ExFuzz.Integration.CoordinatorTest do
     assert output =~ "1) fuzz finds the planted bug (ExFuzz.Fixtures.FuzzTest)"
     assert output =~ ~r/\*\* \(ExFuzz.Error\) got RuntimeError \(planted\)\n\s+input: /
     assert output =~ "input: #{inspect(input)}\n"
+
+    # Saved to the test's corpus.
+    assert [{path, ^input}] = Corpus.load(Fixtures.FuzzTest, :"fuzz finds the planted bug")
+    assert output =~ "file:  #{path}\n"
+
+    assert output =~
+             "rerun: mix test #{@fixture}:#{line(~s(fuzz "finds the planted bug"))}\n"
+
     assert SampleDep.Planted.module_info(:md5) == original, "instrumented only in the worker node"
+  end
+
+  test "saves inputs that reach new coverage to the cache" do
+    # Far too short to find the bug, long enough to reach new coverage.
+    with_node_io(fn ->
+      task = coordinate_at(~s(fuzz "finds the planted bug"), max_execs: 2_000)
+      assert {:done, %{engine: %{solutions: 0}}} = await(task)
+    end)
+
+    cached = Corpus.load_cache(Fixtures.FuzzTest, :"fuzz finds the planted bug")
+    assert cached != []
+
+    # Every seed joins the corpus + fixture's own seed.
+    seeds = length(cached) + 1
+
+    with_node_io(fn ->
+      task = coordinate_at(~s(fuzz "finds the planted bug"), max_execs: seeds)
+      assert {:done, %{engine: %{corpus: ^seeds}}} = await(task)
+    end)
   end
 
   test "relays stats while fuzzing" do
     with_node_io(fn ->
       task =
-        coordinate_at(~s(fuzz "never crashes"), max_time: 300, stats_interval: 50)
+        coordinate_at(~s(fuzz "never crashes"), max_time: 300, refresh_interval: 50)
 
       assert_receive {:ex_fuzz, :started,
                       %{module: Fixtures.FuzzTest, test: :"fuzz never crashes"}},
@@ -130,8 +163,8 @@ defmodule ExFuzz.Integration.CoordinatorTest do
     end)
   end
 
-  test "a worker node that dies hard writes its crash dump under _build" do
-    dump = "_build/ex_fuzz/erl_crash.dump"
+  test "a worker node that dies hard writes its crash dump" do
+    dump = Coordinator.crash_dump()
     File.rm(dump)
 
     with_node_io(fn ->

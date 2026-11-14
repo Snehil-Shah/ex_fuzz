@@ -5,7 +5,12 @@ defmodule Mix.Tasks.FuzzTest do
 
   alias Mix.Tasks.Fuzz
 
-  @fixture "test/support/fixtures/fuzz_test.exs"
+  @fixture "test/fixtures/fuzz_fixture.exs"
+
+  setup do
+    clear_corpus(ExFuzz.Fixtures.FuzzTest)
+    on_exit(fn -> clear_corpus(ExFuzz.Fixtures.FuzzTest) end)
+  end
 
   setup do
     Mix.shell(Mix.Shell.Process)
@@ -132,6 +137,6 @@ defmodule Mix.Tasks.FuzzTest do
       |> elem(0)
 
     assert error.message =~ "signal 9, SIGKILL (the OOM killer sends it)"
-    assert error.message =~ "_build/ex_fuzz/erl_crash.dump"
+    assert error.message =~ "Crash dump: #{ExFuzz.Coordinator.crash_dump()}"
   end
 end

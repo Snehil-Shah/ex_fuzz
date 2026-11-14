@@ -70,7 +70,7 @@ defmodule ExFuzz.RunnerTest do
 
   test "leaves no timer messages behind for the caller" do
     target = fn _ -> :ok end
-    opts = [report_to: self(), timeout: 1_000, stats_interval: 1]
+    opts = [report_to: self(), timeout: 1_000, refresh_interval: 1]
 
     # Ends on max_execs with both timers pending, then on its deadline.
     Runner.run(engine(), target, opts ++ [max_execs: 100, max_time: 50])
@@ -87,12 +87,31 @@ defmodule ExFuzz.RunnerTest do
       report_to: self(),
       timeout: 1_000,
       max_time: 200,
-      stats_interval: 20
+      refresh_interval: 20
     )
 
     assert_received {:ex_fuzz, :stats,
                      %{engine: %{executions: _, corpus: _, solutions: _}, elapsed_ms: _}}
 
     assert_received {:ex_fuzz, :stats, _}
+  end
+
+  defp grows(input), do: if(byte_size(input) > 4, do: ExFuzz.Engine.hit(0))
+
+  test "sends inputs that reach new coverage periodically" do
+    runner =
+      Task.async(fn ->
+        Runner.run(engine(), &grows/1,
+          report_to: self(),
+          corpus_to: self(),
+          timeout: 1_000,
+          refresh_interval: 50
+        )
+      end)
+
+    assert_receive {:ex_fuzz, :corpus, [input]}, 5_000
+    assert byte_size(input) > 4
+    send(runner.pid, :stop)
+    assert {:done, %{engine: %{corpus: 2}}} = Task.await(runner), "the seed and that input"
   end
 end

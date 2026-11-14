@@ -2,8 +2,6 @@ defmodule ExFuzz.Fixtures.FuzzTest do
   use ExUnit.Case
   use ExFuzz
 
-  @moduletag :fuzz_fixture
-
   fuzz "finds the planted bug", data <- binary(), seeds: ["AAAA"] do
     SampleDep.Planted.check(data)
   end

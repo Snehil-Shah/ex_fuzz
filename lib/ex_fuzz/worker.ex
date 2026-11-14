@@ -5,7 +5,7 @@ defmodule ExFuzz.Worker do
   # The coordinator starts that node as `mix test` for one fuzz test.
   # Events are pushed to the coordinator in the origin VM.
 
-  alias ExFuzz.{Engine, Executor, Instrument, Runner, Scope}
+  alias ExFuzz.{Corpus, Engine, Executor, Instrument, Runner, Scope}
 
   # libFuzzer's default.
   # TODO: Configurable
@@ -16,14 +16,14 @@ defmodule ExFuzz.Worker do
 
     * `:max_input_len` - in bytes. Defaults to #{@default_max_input_len}.
     * `:rng_seed` - see `t:ExFuzz.Engine.opts/0`.
-    * `t:ExFuzz.Runner.budget/0`, `:min_heap_size`, `:stats_interval` - see `ExFuzz.Runner.run/3`.
+    * `t:ExFuzz.Runner.budget/0`, `:min_heap_size`, `:refresh_interval` - see `ExFuzz.Runner.run/3`.
   """
   @type option ::
           {:max_input_len, pos_integer()}
           | {:rng_seed, non_neg_integer()}
           | {:min_heap_size, pos_integer()}
           | Runner.budget()
-          | {:stats_interval, pos_integer()}
+          | {:refresh_interval, pos_integer()}
 
   @typedoc """
   Encoded by the coordinator into the worker node's environment.
@@ -41,7 +41,7 @@ defmodule ExFuzz.Worker do
           optional(atom()) => term()
         }
 
-  @type result :: :ok | {:solution, Runner.solution()} | {:error, term()}
+  @type result :: :ok | {:solution, Runner.solution(), Path.t()} | {:error, term()}
 
   @doc "Encodes settings for the environment variable."
   @spec encode_settings([setting()]) :: String.t()
@@ -65,6 +65,9 @@ defmodule ExFuzz.Worker do
   Pushes `{:ex_fuzz, :started, %{module: module, test: name}}`, the runner's stats, then the
   solution if there is one, then `{:ex_fuzz, :done, stats}`, or `{:ex_fuzz, :error, reason}`
   if fuzzing couldn't start.
+
+  A solution is saved to the test's corpus, and returned with the path it was saved to. Inputs
+  that reach new coverage are saved to the test's cache.
   """
   @spec run(String.t(), context(), [binary()], [module()], timeout(), Executor.target()) ::
           result()
@@ -74,15 +77,16 @@ defmodule ExFuzz.Worker do
     forwarder = forwarder(settings)
     send(forwarder, {:ex_fuzz, :started, %{module: context.module, test: context.test}})
 
-    case fuzz(settings, seeds, additional_modules, timeout, target, forwarder) do
+    case fuzz(settings, context, seeds, additional_modules, timeout, target, forwarder) do
       {:done, stats} ->
         send(forwarder, {:ex_fuzz, :done, stats})
         :ok
 
       {:solution, solution, stats} ->
+        path = Corpus.save(context.module, context.test, solution.input)
         send(forwarder, {:ex_fuzz, :solution, solution})
         send(forwarder, {:ex_fuzz, :done, stats})
-        {:solution, solution}
+        {:solution, solution, path}
 
       {:error, reason} ->
         send(forwarder, {:ex_fuzz, :error, reason})
@@ -99,17 +103,54 @@ defmodule ExFuzz.Worker do
     :ok
   end
 
-  defp fuzz(settings, seeds, additional_modules, timeout, target, forwarder) do
+  defp fuzz(settings, context, seeds, additional_modules, timeout, target, forwarder) do
     with {:ok, modules} <- scope(additional_modules),
          {:ok, %{binaries: binaries, probes: probes}} <- Instrument.instrument(modules),
-         {:ok, engine} <- Engine.new(engine_opts(settings, probes, seeds)),
+         {:ok, engine} <- Engine.new(engine_opts(settings, probes, seeds(seeds, context))),
          :ok <- Instrument.load(binaries) do
+      writer = cache_writer(context)
+
       runner_opts =
         settings
-        |> Keyword.take([:min_heap_size, :max_execs, :max_time, :stats_interval])
-        |> Keyword.merge(report_to: forwarder, timeout: timeout)
+        |> Keyword.take([:min_heap_size, :max_execs, :max_time, :refresh_interval])
+        |> Keyword.merge(report_to: forwarder, corpus_to: writer, timeout: timeout)
 
-      Runner.run(engine, target, runner_opts)
+      result = Runner.run(engine, target, runner_opts)
+      await_writes(writer)
+      result
+    end
+  end
+
+  # Load saved seeds.
+  defp seeds(seeds, context) do
+    saved =
+      Corpus.load(context.module, context.test) ++
+        Corpus.load_cache(context.module, context.test)
+
+    Enum.uniq(seeds ++ Enum.map(saved, fn {_path, input} -> input end))
+  end
+
+  # Saves the runner's new corpus entries to the test's cache.
+  defp cache_writer(context) do
+    spawn_link(fn -> write_cache(context.module, context.test) end)
+  end
+
+  defp write_cache(module, test) do
+    receive do
+      {:ex_fuzz, :corpus, inputs} ->
+        Enum.each(inputs, &Corpus.save_cache(module, test, &1))
+        write_cache(module, test)
+
+      {:flush, from} ->
+        send(from, :flushed)
+    end
+  end
+
+  defp await_writes(writer) do
+    send(writer, {:flush, self()})
+
+    receive do
+      :flushed -> :ok
     end
   end
 

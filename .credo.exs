@@ -6,7 +6,7 @@
       files: %{
         included: ["lib/", "test/"],
         # Fixtures are test data.
-        excluded: [~r"/test/support/fixtures/", ~r"/test/fixtures/"]
+        excluded: [~r"/test/fixtures/"]
       },
       strict: true,
       checks: %{
