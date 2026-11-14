@@ -39,6 +39,7 @@ defmodule ExFuzz.MixProject do
       {:rustler, "~> 0.38.0", runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:benchee, "~> 1.5", only: :dev},
       # Fixture projects.
       {:sample_dep, path: "test/fixtures/sample_dep", only: :test}
     ]
