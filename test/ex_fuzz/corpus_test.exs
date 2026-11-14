@@ -14,7 +14,7 @@ defmodule ExFuzz.CorpusTest do
 
   defp name(test), do: test |> Atom.to_string() |> String.replace(~r/[^A-Za-z0-9]+/, "_")
 
-  test "saves an input to the corpus, by module and test, and loads it back", %{test: test} do
+  test "saves an input to the corpus", %{test: test} do
     path = Corpus.save(__MODULE__, test, "input")
 
     assert Path.dirname(path) ==
@@ -32,15 +32,40 @@ defmodule ExFuzz.CorpusTest do
   test "names an input by its content, so saving it twice keeps one file", %{test: test} do
     path = Corpus.save(__MODULE__, test, "input")
     assert Corpus.save(__MODULE__, test, "input") == path
-    assert Path.basename(path) == "c96c6d5be8d08a12"
+    assert Path.basename(path) == "c1c994cd36f0dbfb"
     assert Corpus.load(__MODULE__, test) == [{path, "input"}]
   end
 
-  test "loads inputs sorted by file name", %{test: test} do
-    paths = for input <- ["a", "b", "c"], do: Corpus.save(__MODULE__, test, input)
+  test "writes an input as a version line and an escaped string literal", %{test: test} do
+    input = ~S(a"\#{x}) <> "\n\r\t" <> <<0, 194, 150, 255>>
+    path = Corpus.save(__MODULE__, test, input)
 
-    expected = for path <- Enum.sort(paths), do: {path, File.read!(path)}
-    assert Corpus.load(__MODULE__, test) == expected
+    assert File.read!(path) == ~S(ex_fuzz v1
+"a\"\\\#{x}\n\r\t\x00\xC2\x96\xFF"
+)
+
+    assert Corpus.load(__MODULE__, test) == [{path, input}]
+  end
+
+  test "reads files with Windows line endings", %{test: test} do
+    path = Corpus.save(__MODULE__, test, "input")
+    File.write!(path, String.replace(File.read!(path), "\n", "\r\n"))
+    assert Corpus.load(__MODULE__, test) == [{path, "input"}]
+  end
+
+  test "refuses loading a file with broken encoding", %{test: test} do
+    path = Corpus.save(__MODULE__, test, "input")
+
+    for contents <- ["input", ~s(ex_fuzz v2\n"input"\n), ~s(ex_fuzz v1\n:input\n)] do
+      File.write!(path, contents)
+      message = "invalid corpus file: #{path}"
+      assert_raise RuntimeError, message, fn -> Corpus.load(__MODULE__, test) end
+    end
+  end
+
+  test "loads inputs sorted by file name", %{test: test} do
+    saved = for input <- ["a", "b", "c"], do: {Corpus.save(__MODULE__, test, input), input}
+    assert Corpus.load(__MODULE__, test) == Enum.sort(saved)
   end
 
   test "loads nothing for a test with no saved inputs", %{test: test} do

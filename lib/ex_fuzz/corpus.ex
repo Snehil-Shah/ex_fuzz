@@ -5,6 +5,8 @@ defmodule ExFuzz.Corpus do
 
   alias ExFuzz.Config
 
+  @version "ex_fuzz v1"
+
   @doc "The test's corpus."
   @spec load(module(), atom()) :: [{Path.t(), binary()}]
   def load(module, test), do: read(dir(Config.get(:corpus_dir), module, test))
@@ -36,7 +38,7 @@ defmodule ExFuzz.Corpus do
   defp read(dir) do
     case File.ls(dir) do
       {:ok, files} ->
-        for file <- Enum.sort(files), path = Path.join(dir, file), do: {path, File.read!(path)}
+        for file <- Enum.sort(files), path = Path.join(dir, file), do: {path, decode!(path)}
 
       {:error, :enoent} ->
         []
@@ -44,10 +46,39 @@ defmodule ExFuzz.Corpus do
   end
 
   defp write(dir, input) do
-    hash = :crypto.hash(:sha256, input) |> Base.encode16(case: :lower) |> binary_part(0, 16)
+    contents = encode(input)
+    hash = :crypto.hash(:sha256, contents) |> Base.encode16(case: :lower) |> binary_part(0, 16)
     path = Path.join(dir, hash)
     File.mkdir_p!(dir)
-    File.write!(path, input)
+    File.write!(path, contents)
     path
+  end
+
+  # Encode input as a string literal.
+  # NOTE: `inspect` loses bytes on older Elixir versions, so we hand roll our own deterministic encoder.
+  # Ref: https://github.com/elixir-lang/elixir/commit/44085d43476e3db956b03dfe36de65a7da1926a9
+  defp encode(input) do
+    @version <> "\n\"" <> for(<<byte <- input>>, into: "", do: escape(byte)) <> "\"\n"
+  end
+
+  defp escape(?"), do: ~S(\")
+  defp escape(?\\), do: ~S(\\)
+  defp escape(?#), do: ~S(\#)
+  defp escape(?\n), do: ~S(\n)
+  defp escape(?\r), do: ~S(\r)
+  defp escape(?\t), do: ~S(\t)
+  defp escape(byte) when byte in 0x20..0x7E, do: <<byte>>
+  defp escape(byte), do: "\\x" <> Base.encode16(<<byte>>)
+
+  # Line endings may be `\r\n` after a git checkout.
+  defp decode!(path) do
+    with [version, literal] <- String.split(File.read!(path), "\n", parts: 2),
+         @version <- String.trim_trailing(version, "\r"),
+         {:ok, input} when is_binary(input) <-
+           Code.string_to_quoted(literal, existing_atoms_only: true) do
+      input
+    else
+      _ -> raise "invalid corpus file: #{path}"
+    end
   end
 end

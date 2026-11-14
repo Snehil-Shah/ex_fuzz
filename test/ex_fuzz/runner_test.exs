@@ -99,11 +99,13 @@ defmodule ExFuzz.RunnerTest do
   defp grows(input), do: if(byte_size(input) > 4, do: ExFuzz.Engine.hit(0))
 
   test "sends inputs that reach new coverage periodically" do
+    me = self()
+
     runner =
       Task.async(fn ->
         Runner.run(engine(), &grows/1,
-          report_to: self(),
-          corpus_to: self(),
+          report_to: me,
+          corpus_to: me,
           timeout: 1_000,
           refresh_interval: 50
         )
