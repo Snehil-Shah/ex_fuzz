@@ -14,7 +14,24 @@ defmodule ExFuzz.Engine do
   #
   # A call out of this order raises.
 
-  use Rustler, otp_app: :ex_fuzz, crate: "engine"
+  project = Mix.Project.config()
+
+  # Dependencies compile in `:prod`, so users download the NIF built by the release workflow.
+  use RustlerPrecompiled,
+    otp_app: :ex_fuzz,
+    crate: "engine",
+    base_url: "#{project[:source_url]}/releases/download/v#{project[:version]}",
+    version: project[:version],
+    targets: ~w(
+      aarch64-apple-darwin
+      x86_64-apple-darwin
+      aarch64-unknown-linux-gnu
+      x86_64-unknown-linux-gnu
+      aarch64-unknown-linux-musl
+      x86_64-unknown-linux-musl
+    ),
+    nif_versions: ["2.15"],
+    force_build: Mix.env() in [:dev, :test] or System.get_env("EX_FUZZ_BUILD") in ["1", "true"]
 
   @type engine :: reference()
   @type outcome :: :ok | :crash | :timeout

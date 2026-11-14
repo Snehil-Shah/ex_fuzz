@@ -32,6 +32,7 @@ ExFuzz requires:
 
 * Elixir 1.16+
 * Erlang/OTP 26+
+* macOS or Linux (x86_64 or arm64, glibc 2.34+ or musl)
 
 ## Installation
 
@@ -46,6 +47,10 @@ end
 ```
 
 Then run `mix deps.get` to install it from [Hex](https://hex.pm/packages/ex_fuzz).
+
+> #### Note {: .info}
+>
+> On unsupported platforms, build ExFuzz from source: install Rust, add `{:rustler, "~> 0.38.0", runtime: false}` to your dependencies, and set `EX_FUZZ_BUILD=1`.
 
 ## Quick start
 
