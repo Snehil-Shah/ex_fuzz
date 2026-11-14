@@ -26,6 +26,13 @@ Fuzz testing runs your code with a stream of generated inputs, looking for ones 
 
 If you're interested in learning more, see [The Fuzzing Book](https://www.fuzzingbook.org/).
 
+## Requirements
+
+ExFuzz requires:
+
+* Elixir 1.15+
+* Erlang/OTP 25+
+
 ## Installation
 
 Add `ex_fuzz` to your dependencies in `mix.exs`:

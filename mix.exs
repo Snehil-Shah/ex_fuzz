@@ -9,7 +9,7 @@ defmodule ExFuzz.MixProject do
       app: :ex_fuzz,
       version: @version,
       description: "Coverage-guided fuzz testing for Elixir.",
-      elixir: "~> 1.20",
+      elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       # Fixture projects.
       test_ignore_filters: [~r"^test/fixtures/"],
