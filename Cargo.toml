@@ -1,3 +1,11 @@
 [workspace]
 resolver = "3"
 members = ["native/engine"]
+
+# core_affinity2 0.16.1 doesn't build for x86_64 macOS.
+# Fixed in: https://github.com/AFLplusplus/LibAFL/commit/cf02bdf4140bfd3ea5dd618434c86c591e049d6b
+# TODO: Remove once LibAFL releases past 0.16.1.
+[patch.crates-io]
+core_affinity2 = { git = "https://github.com/AFLplusplus/LibAFL", rev = "cf02bdf4140bfd3ea5dd618434c86c591e049d6b" }
+libafl_core = { git = "https://github.com/AFLplusplus/LibAFL", rev = "cf02bdf4140bfd3ea5dd618434c86c591e049d6b" }
+nonzero_macros = { git = "https://github.com/AFLplusplus/LibAFL", rev = "cf02bdf4140bfd3ea5dd618434c86c591e049d6b" }

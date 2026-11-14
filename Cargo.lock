@@ -170,8 +170,7 @@ dependencies = [
 [[package]]
 name = "core_affinity2"
 version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62f8881ee4f0a11950850c835af4024d8bb95bce539b987e7dd592bc6ccd4c89"
+source = "git+https://github.com/AFLplusplus/LibAFL?rev=cf02bdf4140bfd3ea5dd618434c86c591e049d6b#cf02bdf4140bfd3ea5dd618434c86c591e049d6b"
 dependencies = [
  "libafl_core",
  "libc",
@@ -470,8 +469,7 @@ dependencies = [
 [[package]]
 name = "libafl_core"
 version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "500f095e2ded36a365006c5c0b1af91df9fa1db8eb1d8bf09e0519110051bf18"
+source = "git+https://github.com/AFLplusplus/LibAFL?rev=cf02bdf4140bfd3ea5dd618434c86c591e049d6b#cf02bdf4140bfd3ea5dd618434c86c591e049d6b"
 dependencies = [
  "nix",
  "nonzero_macros",
@@ -628,8 +626,7 @@ dependencies = [
 [[package]]
 name = "nonzero_macros"
 version = "0.16.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f58b86669675275aa80411d548739c787956f3a80594667bd96fc9d03d5ebfb"
+source = "git+https://github.com/AFLplusplus/LibAFL?rev=cf02bdf4140bfd3ea5dd618434c86c591e049d6b#cf02bdf4140bfd3ea5dd618434c86c591e049d6b"
 
 [[package]]
 name = "num-traits"
