@@ -2,9 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
-  # Temp.
-  workflow_dispatch:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
 
 permissions:
   contents: read
@@ -36,8 +34,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Read project version
-        run: echo "PROJECT_VERSION=$(sed -n 's/^  @version "\(.*\)"/\1/p' mix.exs)" >> "$GITHUB_ENV"
+      - name: Set version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@master
@@ -50,7 +49,7 @@ jobs:
         uses: philss/rustler-precompiled-action@v1.1.5
         with:
           project-name: engine
-          project-version: ${{ env.PROJECT_VERSION }}
+          project-version: ${{ steps.version.outputs.version }}
           target: ${{ matrix.target }}
           nif-version: "2.15"
           use-cross: ${{ matrix.use-cross }}
@@ -66,7 +65,6 @@ jobs:
   github:
     name: GitHub
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -74,6 +72,10 @@ jobs:
       contents: write
 
     steps:
+      - name: Set version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
@@ -84,3 +86,77 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: nifs/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            ## Distribution
+
+            `ex_fuzz` ${{ steps.version.outputs.version }} is available on Hex:
+
+            - [Package](https://hex.pm/packages/ex_fuzz/${{ steps.version.outputs.version }})
+            - [Documentation](https://hexdocs.pm/ex_fuzz/${{ steps.version.outputs.version }})
+
+            ## Installation
+
+            Add `ex_fuzz` to your dependencies in `mix.exs`:
+
+            ```elixir
+            def deps do
+              [
+                {:ex_fuzz, "~> ${{ steps.version.outputs.version }}", only: [:dev, :test]}
+              ]
+            end
+            ```
+
+            Then run `mix deps.get` to install it.
+
+  hex:
+    name: Hex
+    needs: github
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      # Matches `.tool-versions`.
+      ELIXIR_VERSION: "1.20.5"
+      OTP_VERSION: "29.1.2"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set version
+        run: echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      # Patch version in the published source.
+      - name: Write version into mix.exs
+        run: |
+          sed -i "s/^  @version .*/  @version \"$APP_VERSION\"/" mix.exs
+          grep -n "@version \"$APP_VERSION\"" mix.exs
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Generate checksum file
+        run: mix rustler_precompiled.download ExFuzz.Engine --all --print
+
+      - name: Publish package and docs
+        run: mix hex.publish --yes
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
