@@ -59,6 +59,26 @@ defmodule Mix.Tasks.FuzzTest do
     assert output =~ ~r/got RuntimeError \(planted\)\n\s+input: /
   end
 
+  test "a failing input is saved, and the rerun command fails on it every time" do
+    {_exit, output} =
+      with_node_io(fn ->
+        catch_exit(Fuzz.run(["#{@fixture}:fuzz finds the planted bug", "--max-time", "10000"]))
+      end)
+
+    [_, input] = Regex.run(~r/input: (.+)\n/, output)
+    [_, path] = Regex.run(~r/file:  (.+)\n/, output)
+    [_, rerun] = Regex.run(~r/rerun: (.+)\n/, output)
+    ["mix" | args] = String.split(rerun)
+
+    for _ <- 1..2 do
+      {output, status} = System.cmd("mix", args, stderr_to_stdout: true)
+      assert status == 2
+      assert output =~ ~r/got RuntimeError \(planted\)\n/
+      assert output =~ "seed:  #{input}\n"
+      assert output =~ "file:  #{path}\n"
+    end
+  end
+
   test "wants exactly one fuzz test" do
     assert_raise Mix.Error, ~r/Expected one fuzz test/, fn -> Fuzz.run([]) end
     assert_raise Mix.Error, ~r/Expected a fuzz test/, fn -> Fuzz.run(["test/a.exs"]) end

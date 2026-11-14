@@ -1,4 +1,4 @@
-defmodule ExFuzz.Integration.CoordinatorTest do
+defmodule ExFuzz.CoordinatorTest do
   use ExUnit.Case, async: false
 
   # Each test fuzzes a fuzz test of the fixture file in a worker node.
