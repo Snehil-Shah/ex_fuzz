@@ -30,8 +30,8 @@ If you're interested in learning more, see [The Fuzzing Book](https://www.fuzzin
 
 ExFuzz requires:
 
-* Elixir 1.15+
-* Erlang/OTP 25+
+* Elixir 1.16+
+* Erlang/OTP 26+
 
 ## Installation
 

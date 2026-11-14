@@ -32,8 +32,8 @@ jobs:
         include:
           # Oldest supported.
           - os: ubuntu-24.04
-            elixir: "1.15.8"
-            otp: "25.3.2.21"
+            elixir: "1.16"
+            otp: "26"
 
           # Matches `.tool-versions`.
           - os: ubuntu-24.04
