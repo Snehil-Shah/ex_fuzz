@@ -1,10 +1,14 @@
 defmodule ExFuzz.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @source_url "https://github.com/Snehil-Shah/ex_fuzz"
+
   def project do
     [
       app: :ex_fuzz,
-      version: "0.1.0",
+      version: @version,
+      description: "Coverage-guided fuzz testing for Elixir.",
       elixir: "~> 1.20",
       elixirc_paths: elixirc_paths(Mix.env()),
       # Fixture projects.
@@ -13,7 +17,20 @@ defmodule ExFuzz.MixProject do
       deps: deps(),
       # ExFuzz's macros call ExUnit, and `mix fuzz` and the worker call Mix.
       dialyzer: [plt_add_apps: [:ex_unit, :mix]],
-      ex_fuzz: ex_fuzz(Mix.env())
+      ex_fuzz: ex_fuzz(Mix.env()),
+      name: "ExFuzz",
+      source_url: @source_url,
+      homepage_url: @source_url,
+      docs: docs()
+    ]
+  end
+
+  # Run "mix help docs" to learn about documentation.
+  defp docs do
+    [
+      main: "overview",
+      source_ref: "v#{@version}",
+      extras: ["guides/overview.md", "guides/corpus.md", "guides/configuration.md"]
     ]
   end
 
@@ -39,6 +56,7 @@ defmodule ExFuzz.MixProject do
       {:rustler, "~> 0.38.0", runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
       {:benchee, "~> 1.5", only: :dev},
       # Fixture projects.
       {:sample_dep, path: "test/fixtures/sample_dep", only: :test}

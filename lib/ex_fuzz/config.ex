@@ -8,9 +8,9 @@ defmodule ExFuzz.Config do
   #     end
 
   @defaults [
-    # Directory to store corpus.
+    # Directory to store failing inputs as seed corpus.
     corpus_dir: "test/fixtures/fuzz",
-    # Directory to cache fuzzing inputs.
+    # Directory to cache fuzzing progress.
     cache_dir: "_build/ex_fuzz/corpus",
     # Directory to store crash dumps during fuzzing.
     crash_dump_dir: "_build/ex_fuzz"

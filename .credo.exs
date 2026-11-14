@@ -4,7 +4,7 @@
     %{
       name: "default",
       files: %{
-        included: ["lib/", "test/", "bench/"],
+        included: ["lib/", "test/", "bench/", "examples/"],
         # Fixtures are test data.
         excluded: [~r"/test/fixtures/"]
       },

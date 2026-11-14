@@ -23,7 +23,7 @@ defmodule ExFuzz.Corpus do
   @spec save_cache(module(), atom(), binary()) :: Path.t()
   def save_cache(module, test, input), do: write(dir(Config.get(:cache_dir), module, test), input)
 
-  # Normalized corpus directory: `<base>/MyApp.JSONTest/Jason_never_crashes`.
+  # Normalized corpus directory: `<base>/MyApp.JasonTest/Jason_never_crashes`.
   defp dir(base, module, test), do: Path.join([base, inspect(module), name(test)])
 
   # `:"fuzz Jason never crashes"` - `Jason_never_crashes`.

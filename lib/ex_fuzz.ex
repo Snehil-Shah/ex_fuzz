@@ -2,7 +2,7 @@ defmodule ExFuzz do
   @moduledoc """
   Coverage-guided fuzz testing for Elixir.
 
-      defmodule JSONTest do
+      defmodule JasonTest do
         use ExUnit.Case
         use ExFuzz
 
@@ -20,8 +20,11 @@ defmodule ExFuzz do
 
   To start fuzzing a target, point `mix fuzz` at the test by line or name:
 
-      $ mix fuzz test/json_test.exs:6
-      $ mix fuzz test/json_test.exs:"fuzz Jason never crashes"
+      $ mix fuzz test/jason_test.exs:6
+      $ mix fuzz test/jason_test.exs:"fuzz Jason never crashes"
+
+  Failing inputs are saved as seed corpus to `test/fixtures/fuzz/` and replayed by `mix test` from then on.
+  You can configure this with `:corpus_dir` under the `:ex_fuzz` key of your project config.
   """
 
   alias ExFuzz.{Corpus, Executor, Scope, Worker}
@@ -48,7 +51,7 @@ defmodule ExFuzz do
 
   ## Options
 
-    * `:seeds` - the seed corpus: example inputs that fuzzing starts from.
+    * `:seeds` - example inputs that fuzzing starts from, part of the seed corpus.
 
   ## Examples
 
@@ -60,7 +63,7 @@ defmodule ExFuzz do
 
   You can start fuzzing the target using `mix fuzz`:
 
-      $ mix fuzz test/json_test.exs:"fuzz Jason never crashes"
+      $ mix fuzz test/jason_test.exs:"fuzz Jason never crashes"
   """
   defmacro fuzz(message, input, context \\ quote(do: _), opts \\ [], contents) do
     {context, opts} =

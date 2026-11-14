@@ -4,8 +4,11 @@ defmodule Mix.Tasks.Fuzz do
   @moduledoc """
   Fuzzes one fuzz target, by the test's line or name:
 
-      $ mix fuzz test/json_test.exs:6
-      $ mix fuzz test/json_test.exs:"fuzz Jason never crashes"
+      $ mix fuzz test/jason_test.exs:6
+      $ mix fuzz test/jason_test.exs:"fuzz Jason never crashes"
+
+  Failing inputs are saved as seed corpus to `test/fixtures/fuzz/` and replayed by `mix test` from then on.
+  You can configure this with `:corpus_dir` under the `:ex_fuzz` key of your project config.
 
   ## Options
 
