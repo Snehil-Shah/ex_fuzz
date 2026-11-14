@@ -13,16 +13,15 @@ defmodule ExFuzz.TestHelpers do
     engine
   end
 
-  @doc "Puts back the original, uninstrumented code of `modules`."
-  def restore(modules) do
-    for module <- List.wrap(modules) do
-      :code.purge(module)
-      {:module, ^module} = :code.load_file(module)
-    end
+  @doc "Restores `modules` to uninstrumented form when the test ends."
+  def restore_on_exit(modules) do
+    on_exit(fn ->
+      for module <- List.wrap(modules) do
+        :code.purge(module)
+        {:module, ^module} = :code.load_file(module)
+      end
+    end)
   end
-
-  @doc "Restores `modules` when the test ends."
-  def restore_on_exit(modules), do: on_exit(fn -> restore(modules) end)
 
   @doc "Clears corpus and cache for `module`."
   def clear_corpus(module) do
