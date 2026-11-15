@@ -115,6 +115,12 @@ jobs:
     needs: github
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # Hex workload identity environment.
+    environment: hex-release
+
+    permissions:
+      contents: read
+      id-token: write
 
     env:
       # Matches `.tool-versions`.
@@ -158,5 +164,3 @@ jobs:
 
       - name: Publish package and docs
         run: mix hex.publish --yes
-        env:
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
