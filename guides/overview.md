@@ -18,7 +18,7 @@ defmodule JasonTest do
 end
 ```
 
-ExFuzz is well-integrated with ExUnit so your fuzz tests can run alongside your regular tests and use the seed corpus as an ever-growing regression suite.
+ExFuzz is well-integrated with ExUnit, so your fuzz tests can run alongside your regular tests and use the seed corpus as an ever-growing regression suite.
 
 ## What is fuzz testing?
 
