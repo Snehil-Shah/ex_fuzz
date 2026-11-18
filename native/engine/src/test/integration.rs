@@ -65,6 +65,22 @@ fn does_not_find_bug_without_coverage() {
 }
 
 #[test]
+fn a_loop_grows_the_corpus_once_per_bucket() {
+    // Probe 0 is hit once per input byte. With raw counts, every longer input would be new coverage.
+    // With buckets, only reaching 8, 16, 32, 64 and 128 hits is, on top of the 4-byte seed.
+    let _lock = lock_map();
+    let mut engine = Engine::new(config()).unwrap();
+    fuzz(&mut engine, 100_000, |input| {
+        for _ in 0..input.len().min(255) {
+            coverage::hit(0);
+        }
+        Outcome::Ok
+    });
+    let corpus = engine.stats().corpus;
+    assert!((2..=6).contains(&corpus), "corpus of {corpus}");
+}
+
+#[test]
 fn new_coverage_is_reported_as_corpus_verdict() {
     let _lock = lock_map();
     let mut engine = Engine::new(config()).unwrap();
