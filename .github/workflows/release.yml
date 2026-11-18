@@ -157,11 +157,14 @@ jobs:
       - name: Set version
         run: echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      # Patch version in the published source.
-      - name: Write version into mix.exs
+      # Patch version in the published source and docs.
+      - name: Patch version
         run: |
           sed -i "s/^  @version .*/  @version \"$APP_VERSION\"/" mix.exs
+          sed -i "s/{:ex_fuzz, \">= 0.0.0\"/{:ex_fuzz, \"~> $APP_VERSION\"/" README.md guides/overview.md
           grep -n "@version \"$APP_VERSION\"" mix.exs
+          grep -n "~> $APP_VERSION" README.md
+          grep -n "~> $APP_VERSION" guides/overview.md
 
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
