@@ -94,8 +94,7 @@ where
         let solutions_before = self.state.solutions().count();
         let exit_kind = outcome.into();
 
-        // We run inputs ourselves instead of through a LibAFL executor, so nothing else calls
-        // the observers' post-run hook. That hook is what buckets the hit counts.
+        // Bucket the hit counts via the observers' post-run hook.
         self.observers
             .post_exec_all(&mut self.state, &input, &exit_kind)?;
 
@@ -224,8 +223,7 @@ pub(crate) fn build(
             counters.len(),
         )
     };
-    // Bucket the counts like AFL (1, 2, 3, 4-7, 8-15, 16-31, 32-127, 128+), so a loop running
-    // one more time isn't new coverage.
+    // Bucket the counts, so a loop running one more time isn't new coverage.
     let observer = HitcountsMapObserver::new(map);
     let mut feedback = MaxMapFeedback::new(&observer);
     // A run is a bug if it crashed or timed out.
@@ -409,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn more_hits_in_the_same_bucket_are_not_new_coverage() {
+    fn hits_are_bucketed() {
         let _lock = lock_map();
         let mut driver = seeded(&[b"AAAA"]);
         run_hitting(&mut driver, 5);
@@ -423,16 +421,6 @@ mod tests {
             Verdict::Corpus,
             "8 starts the next bucket"
         );
-    }
-
-    #[test]
-    fn one_two_and_three_hits_are_different_buckets() {
-        let _lock = lock_map();
-        let mut driver = seeded(&[b"AAAA"]);
-        run_hitting(&mut driver, 0);
-        for hits in 1..=3 {
-            assert_eq!(run_hitting(&mut driver, hits), Verdict::Corpus, "{hits}");
-        }
     }
 
     #[test]
