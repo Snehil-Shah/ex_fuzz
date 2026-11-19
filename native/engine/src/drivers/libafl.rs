@@ -20,7 +20,7 @@ use libafl::{
     fuzzer::{ExecuteInputResult, ExecutionProcessor},
     inputs::{BytesInput, HasTargetBytes},
     mutators::{HavocScheduledMutator, havoc_mutations},
-    observers::StdMapObserver,
+    observers::{HitcountsMapObserver, ObserversTuple, StdMapObserver},
     schedulers::QueueScheduler,
     stages::push::{PushStage, StdMutationalPushStage},
     state::{HasCorpus, HasExecutions, HasMaxSize, HasSolutions, StdState},
@@ -57,7 +57,7 @@ struct LibAflDriver<Z, S, EM, OT, PS> {
     /// Maps to [`NopEventManager`].
     mgr: EM,
     /// The coverage map observer.
-    /// Maps to a one-element tuple of [`StdMapObserver`].
+    /// Maps to a one-element tuple of [`HitcountsMapObserver`] over a [`StdMapObserver`].
     observers: OT,
     /// The mutational push stage that produces inputs.
     /// Maps to [`StdMutationalPushStage`].
@@ -81,6 +81,7 @@ where
     Z: ExecutionProcessor<EM, BytesInput, OT, S>,
     PS: PushStage<EM, BytesInput, OT, S, Z>,
     S: HasCorpus<BytesInput> + HasSolutions<BytesInput> + HasExecutions,
+    OT: ObserversTuple<BytesInput, S>,
 {
     /// Hand the finished run to LibAFL and work out what it did with the input.
     fn report(&mut self, outcome: Outcome) -> Result<Verdict, Error> {
@@ -92,6 +93,10 @@ where
         let corpus_before = self.state.corpus().count();
         let solutions_before = self.state.solutions().count();
         let exit_kind = outcome.into();
+
+        // Bucket the hit counts via the observers' post-run hook.
+        self.observers
+            .post_exec_all(&mut self.state, &input, &exit_kind)?;
 
         // Add to corpus if it's a seed.
         let seed = self.seeds.pop_front().is_some();
@@ -211,13 +216,15 @@ pub(crate) fn build(
 ) -> Result<Box<dyn Driver>, Error> {
     // SAFETY: the pointer is valid for `counters.len()` bytes for the rest of the program,
     // since the map is leaked, never freed. `AtomicU8` has the same layout as `u8`.
-    let observer = unsafe {
+    let map = unsafe {
         StdMapObserver::from_mut_ptr(
             "coverage",
             counters.as_ptr().cast::<u8>().cast_mut(),
             counters.len(),
         )
     };
+    // Bucket the counts, so a loop running one more time isn't new coverage.
+    let observer = HitcountsMapObserver::new(map);
     let mut feedback = MaxMapFeedback::new(&observer);
     // A run is a bug if it crashed or timed out.
     let mut objective = feedback_or_fast!(CrashFeedback::new(), TimeoutFeedback::new());
@@ -387,6 +394,33 @@ mod tests {
         assert_eq!(run(&mut driver, Outcome::Crash).1, Verdict::Solution);
         assert_eq!(run(&mut driver, Outcome::Timeout).1, Verdict::Solution);
         assert_eq!(driver.stats().solutions, 2);
+    }
+
+    /// Run one input that hits probe 0 `hits` times. Returns its verdict.
+    fn run_hitting(driver: &mut Box<dyn Driver>, hits: usize) -> Verdict {
+        driver.next().unwrap();
+        coverage::reset();
+        for _ in 0..hits {
+            coverage::hit(0);
+        }
+        driver.report(Outcome::Ok).unwrap()
+    }
+
+    #[test]
+    fn hits_are_bucketed() {
+        let _lock = lock_map();
+        let mut driver = seeded(&[b"AAAA"]);
+        run_hitting(&mut driver, 5);
+        assert_eq!(
+            run_hitting(&mut driver, 7),
+            Verdict::None,
+            "5 and 7 are both in the 4-7 bucket"
+        );
+        assert_eq!(
+            run_hitting(&mut driver, 8),
+            Verdict::Corpus,
+            "8 starts the next bucket"
+        );
     }
 
     #[test]
